@@ -1,0 +1,59 @@
+[package]
+name = "feroha"
+version = "0.2.1"
+description = "FeroHa - Dual-Track AI Note IDE"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "feroha_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "feroha"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = { version = "6", features = ["macos_kqueue"] }
+pulldown-cmark = "0.11"
+pulldown-cmark-to-cmark = "13"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+thiserror = "1"
+hex = "0.4"
+regex = "1"
+md5 = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+# AI Surface dependencies
+# lance = "0.14"       # LanceDB embedded — uncomment when LanceDB Rust API stabilizes
+# ort = "2"            # ONNX Runtime for local embedding models — opt-in
+
+# Plugin System dependencies (Stage 6)
+toml = "0.8"
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+# wasmtime = "22"      # WASM runtime — uncomment for Stage 6 production build
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
