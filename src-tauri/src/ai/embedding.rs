@@ -1,21 +1,16 @@
 // Embedding Pipeline — Real implementation via API
 // Falls back to hash-based pseudo-embedding when no API key configured
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum EmbeddingBackend {
+    #[default]
     None,
     /// OpenAI text-embedding-3-small (1536 dims) or similar
     OpenAi { api_key: String, model: String },
     /// Google text-embedding-004 (768 dims)
     Gemini { api_key: String },
-}
-
-impl Default for EmbeddingBackend {
-    fn default() -> Self {
-        EmbeddingBackend::None
-    }
 }
 
 impl EmbeddingBackend {
@@ -81,9 +76,7 @@ impl EmbeddingPipeline {
                     }
                 }
             }
-            EmbeddingBackend::None => {
-                hash_embed(texts, 384)
-            }
+            EmbeddingBackend::None => hash_embed(texts, 384),
         }
     }
 
@@ -164,6 +157,10 @@ mod tests {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
     }
 }

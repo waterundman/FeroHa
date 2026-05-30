@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 
 test.describe("Debug - DOM & Console Inspection", () => {
   test("capture DOM tree and console logs", async ({ page }) => {
@@ -64,7 +64,7 @@ test.describe("Debug - DOM & Console Inspection", () => {
     await page.waitForLoadState("networkidle");
 
     // Switch to Graph
-    await page.getByText("Graph", { exact: true }).click();
+    await page.locator('button[title="Graph"]').click();
     await page.waitForTimeout(500);
 
     const graphCanvas = page.locator("canvas");
@@ -77,7 +77,7 @@ test.describe("Debug - DOM & Console Inspection", () => {
     }
 
     // Switch to Diff
-    await page.getByText("Diff", { exact: true }).click();
+    await page.locator('button[title="Diff"]').click();
     await page.waitForTimeout(500);
 
     const diffContent = await page.locator("main").textContent();

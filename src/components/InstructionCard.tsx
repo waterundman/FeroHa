@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import FeroHaIcon from "./FeroHaIcon";
 
 // Instruction Card Types
 export type CardType = 
@@ -8,14 +9,19 @@ export type CardType =
   | "connect"
   | "dream"
   | "research"
+  | "analyze"
+  | "rewrite"
   | "custom";
+
+type InstructionParamValue = string | number | boolean | string[];
+type InstructionParams = Record<string, InstructionParamValue>;
 
 export interface InstructionCard {
   id: string;
   type: CardType;
   label: string;
   description: string;
-  params: Record<string, any>;
+  params: InstructionParams;
   icon: string;
 }
 
@@ -34,7 +40,7 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Search",
     description: "Search notes by keyword or semantic similarity",
     params: { query: "", top_k: 5 },
-    icon: "🔍",
+    icon: "Search",
   },
   {
     id: "summarize",
@@ -42,7 +48,7 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Summarize",
     description: "Generate a summary of selected notes",
     params: { target: "", style: "bullet" },
-    icon: "📝",
+    icon: "Pencil",
   },
   {
     id: "organize",
@@ -50,7 +56,7 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Organize",
     description: "Organize and structure notes",
     params: { target: "", method: "auto" },
-    icon: "📂",
+    icon: "FolderOpen",
   },
   {
     id: "connect",
@@ -58,7 +64,7 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Connect",
     description: "Find and create connections between notes",
     params: { source: "", target: "" },
-    icon: "🔗",
+    icon: "Link",
   },
   {
     id: "dream",
@@ -66,7 +72,7 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Dream",
     description: "Run memory consolidation (NREM/REM/Insight)",
     params: { mode: "full" },
-    icon: "💤",
+    icon: "Moon",
   },
   {
     id: "research",
@@ -74,7 +80,23 @@ const SINGLE_CARDS: InstructionCard[] = [
     label: "Research",
     description: "Deep research on a topic using AI",
     params: { topic: "", depth: "standard" },
-    icon: "🔬",
+    icon: "Microscope",
+  },
+  {
+    id: "analyze",
+    type: "analyze",
+    label: "Analyze",
+    description: "分析文本结构、论证逻辑和关键词提取",
+    params: { target: "", content: "" },
+    icon: "FileSearch",
+  },
+  {
+    id: "rewrite",
+    type: "rewrite",
+    label: "Rewrite",
+    description: "按指定风格改写文本内容",
+    params: { target: "", content: "", style: "formal" },
+    icon: "PenLine",
   },
 ];
 
@@ -109,8 +131,14 @@ const COMBO_CARDS: ComboCard[] = [
   },
 ];
 
+function toInputValue(value: InstructionParamValue) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "boolean") return String(value);
+  return value;
+}
+
 interface InstructionCardPanelProps {
-  onExecute: (card: InstructionCard, params: Record<string, any>) => void;
+  onExecute: (card: InstructionCard, params: InstructionParams) => void;
   onExecuteCombo: (combo: ComboCard) => void;
   isTauri: boolean;
 }
@@ -121,7 +149,7 @@ export default function InstructionCardPanel({
   isTauri: _isTauri,
 }: InstructionCardPanelProps) {
   const [selectedCard, setSelectedCard] = useState<InstructionCard | null>(null);
-  const [params, setParams] = useState<Record<string, any>>({});
+  const [params, setParams] = useState<InstructionParams>({});
   const [activeTab, setActiveTab] = useState<"single" | "combo">("single");
 
   const handleCardClick = useCallback((card: InstructionCard) => {
@@ -172,7 +200,7 @@ export default function InstructionCardPanel({
                 className={`card-item ${selectedCard?.id === card.id ? "selected" : ""}`}
                 onClick={() => handleCardClick(card)}
               >
-                <span className="card-icon">{card.icon}</span>
+                <span className="card-icon"><FeroHaIcon name={card.icon} size={16} /></span>
                 <span className="card-label">{card.label}</span>
               </div>
             ))
@@ -183,7 +211,12 @@ export default function InstructionCardPanel({
                 onClick={() => handleComboClick(combo)}
               >
                 <span className="card-icon">
-                  {combo.cards.map((c) => c.icon).join("→")}
+                  {combo.cards.map((c, i) => (
+                    <span key={c.id}>
+                      <FeroHaIcon name={c.icon} size={16} />
+                      {i < combo.cards.length - 1 ? "→" : ""}
+                    </span>
+                  ))}
                 </span>
                 <span className="card-label">{combo.name}</span>
               </div>
@@ -193,7 +226,7 @@ export default function InstructionCardPanel({
       {selectedCard && (
         <div className="card-detail">
           <h4>
-            {selectedCard.icon} {selectedCard.label}
+            <FeroHaIcon name={selectedCard.icon} size={16} /> {selectedCard.label}
           </h4>
           <p>{selectedCard.description}</p>
           <div className="params-form">
@@ -202,7 +235,7 @@ export default function InstructionCardPanel({
                 <label>{key}:</label>
                 <input
                   type={typeof defaultValue === "number" ? "number" : "text"}
-                  value={params[key] ?? defaultValue}
+                  value={toInputValue(params[key] ?? defaultValue)}
                   onChange={(e) =>
                     setParams((prev) => ({
                       ...prev,

@@ -1,6 +1,6 @@
 // CLI Command Parser — Parse /agent and other slash commands
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// All supported CLI commands
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,17 +42,42 @@ pub enum CliCommand {
     /// /agent status (show running/queued agent tasks)
     Status,
     /// /agent config --model <model> (set LLM model)
-    Config {
-        model: Option<String>,
+    Config { model: Option<String> },
+    /// /agent dream (run memory consolidation cycle)
+    Dream,
+    /// /agent research <question> [--max-iterations N]
+    /// /agent deep-research <question> [--max-iterations N]
+    DeepResearch {
+        question: String,
+        max_iterations: Option<usize>,
+    },
+    /// Custom command dispatched programmatically (not via CLI parsing)
+    Custom(String),
+    /// CommandCard pipeline command (dispatched via frontend CommandCard pipeline)
+    CustomCard {
+        prompt: String,
+        params: Option<std::collections::HashMap<String, String>>,
+        card_type: Option<String>,
+        card_id: Option<String>,
     },
 }
 
-fn default_top_k() -> usize { 5 }
-fn default_max_papers() -> usize { 5 }
-fn default_depth() -> usize { 2 }
+fn default_top_k() -> usize {
+    5
+}
+fn default_max_papers() -> usize {
+    5
+}
+fn default_depth() -> usize {
+    2
+}
 
-fn default_style() -> SummarizeStyle { SummarizeStyle::Bullet }
-fn default_level() -> ExplainLevel { ExplainLevel::Intermediate }
+fn default_style() -> SummarizeStyle {
+    SummarizeStyle::Bullet
+}
+fn default_level() -> ExplainLevel {
+    ExplainLevel::Intermediate
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +102,7 @@ pub enum CliParseError {
     #[error("Missing required parameter: {0}")]
     MissingParam(String),
     #[error("Invalid parameter value: {0}")]
+    #[allow(dead_code)]
     InvalidParam(String),
     #[error("Parse error: {0}")]
     ParseError(String),
@@ -107,7 +133,7 @@ pub fn parse(input: &str) -> Result<CliCommand, CliParseError> {
         (verb, args)
     } else {
         return Err(CliParseError::ParseError(
-            "Command must start with /agent or /".to_string()
+            "Command must start with /agent or /".to_string(),
         ));
     };
 
@@ -115,14 +141,15 @@ pub fn parse(input: &str) -> Result<CliCommand, CliParseError> {
 
     match verb {
         "search" => Ok(CliCommand::Search {
-            query: args.get_str("query", "q").ok_or_else(|| {
-                CliParseError::MissingParam("--query".to_string())
-            })?,
+            query: args
+                .get_str("query", "q")
+                .ok_or_else(|| CliParseError::MissingParam("--query".to_string()))?,
             top_k: args.get_usize("top-k", "k").unwrap_or(5),
         }),
         "summarize" => Ok(CliCommand::Summarize {
             target: args.get_str("target", "t").unwrap_or_default(),
-            style: args.get_str("style", "s")
+            style: args
+                .get_str("style", "s")
                 .map(|s| match s.to_lowercase().as_str() {
                     "paragraph" | "p" => SummarizeStyle::Paragraph,
                     "outline" | "o" => SummarizeStyle::Outline,
@@ -131,15 +158,16 @@ pub fn parse(input: &str) -> Result<CliCommand, CliParseError> {
                 .unwrap_or(SummarizeStyle::Bullet),
         }),
         "fetch-papers" | "fetch_papers" | "fetch" => Ok(CliCommand::FetchPapers {
-            topic: args.get_str("topic", "t").ok_or_else(|| {
-                CliParseError::MissingParam("--topic".to_string())
-            })?,
+            topic: args
+                .get_str("topic", "t")
+                .ok_or_else(|| CliParseError::MissingParam("--topic".to_string()))?,
             max: args.get_usize("max", "m").unwrap_or(5),
             link_to: args.get_str("link-to", "l"),
         }),
         "deep-dive" | "deep_dive" | "deepdive" => {
             // Try positional arg first, then --concept
-            let concept = args.positional()
+            let concept = args
+                .positional()
                 .or_else(|| args.get_str("concept", "c"))
                 .unwrap_or_default();
             Ok(CliCommand::DeepDive {
@@ -148,12 +176,14 @@ pub fn parse(input: &str) -> Result<CliCommand, CliParseError> {
             })
         }
         "explain" => {
-            let concept = args.positional()
+            let concept = args
+                .positional()
                 .or_else(|| args.get_str("concept", "c"))
                 .unwrap_or_default();
             Ok(CliCommand::Explain {
                 concept,
-                level: args.get_str("level", "l")
+                level: args
+                    .get_str("level", "l")
                     .map(|s| match s.to_lowercase().as_str() {
                         "beginner" | "b" => ExplainLevel::Beginner,
                         "expert" | "e" => ExplainLevel::Expert,
@@ -167,6 +197,17 @@ pub fn parse(input: &str) -> Result<CliCommand, CliParseError> {
         "config" | "cfg" => Ok(CliCommand::Config {
             model: args.get_str("model", "m"),
         }),
+        "research" | "deep-research" | "deep_research" => {
+            let question = args
+                .positional()
+                .or_else(|| args.get_str("question", "q"))
+                .ok_or_else(|| CliParseError::MissingParam("question".to_string()))?;
+            Ok(CliCommand::DeepResearch {
+                question,
+                max_iterations: args.get_usize("max-iterations", "m"),
+            })
+        }
+        "dream" => Ok(CliCommand::Dream),
         _ => Err(CliParseError::UnknownCommand(verb.to_string())),
     }
 }
@@ -179,7 +220,8 @@ struct ArgsMap {
 
 impl ArgsMap {
     fn get_str(&self, long: &str, short: &str) -> Option<String> {
-        self.flags.iter()
+        self.flags
+            .iter()
             .find(|(k, _)| k == long || k == short)
             .map(|(_, v)| v.clone())
             .or_else(|| self.positional.first().cloned())
@@ -203,8 +245,12 @@ fn parse_args(input: &str) -> ArgsMap {
 
     while i < chars.len() {
         // Skip whitespace
-        while i < chars.len() && chars[i].is_whitespace() { i += 1; }
-        if i >= chars.len() { break; }
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
 
         if chars[i] == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
             // --flag or --flag=value or --flag value
@@ -229,7 +275,9 @@ fn parse_args(input: &str) -> ArgsMap {
                         }
                         i += 1;
                     }
-                    if i < chars.len() { i += 1; } // skip closing "
+                    if i < chars.len() {
+                        i += 1;
+                    } // skip closing "
                     val
                 } else {
                     let mut val = String::new();
@@ -242,7 +290,9 @@ fn parse_args(input: &str) -> ArgsMap {
             } else {
                 // --flag value
                 let mut val = String::new();
-                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 if i < chars.len() && chars[i] == '"' {
                     i += 1;
                     while i < chars.len() && chars[i] != '"' {
@@ -254,7 +304,9 @@ fn parse_args(input: &str) -> ArgsMap {
                         }
                         i += 1;
                     }
-                    if i < chars.len() { i += 1; }
+                    if i < chars.len() {
+                        i += 1;
+                    }
                 } else {
                     while i < chars.len() && !chars[i].is_whitespace() {
                         val.push(chars[i]);
@@ -273,8 +325,12 @@ fn parse_args(input: &str) -> ArgsMap {
                 target.push(chars[i]);
                 i += 1;
             }
-            if i < chars.len() { i += 1; } // skip first ]
-            if i < chars.len() && chars[i] == ']' { i += 1; } // skip second ]
+            if i < chars.len() {
+                i += 1;
+            } // skip first ]
+            if i < chars.len() && chars[i] == ']' {
+                i += 1;
+            } // skip second ]
             positional.push(target);
         } else if chars[i] == '"' {
             // Quoted string
@@ -289,7 +345,9 @@ fn parse_args(input: &str) -> ArgsMap {
                 }
                 i += 1;
             }
-            if i < chars.len() { i += 1; }
+            if i < chars.len() {
+                i += 1;
+            }
             positional.push(val);
         } else {
             // Bare word
@@ -355,5 +413,11 @@ mod tests {
     fn test_parse_status() {
         let cmd = parse("/agent status").unwrap();
         assert!(matches!(cmd, CliCommand::Status));
+    }
+
+    #[test]
+    fn test_parse_dream() {
+        let cmd = parse("/agent dream").unwrap();
+        assert!(matches!(cmd, CliCommand::Dream));
     }
 }

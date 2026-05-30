@@ -1,10 +1,11 @@
 // Plugin Loader — Load, validate, and instantiate WASM plugins
 // Stage 6: Full implementation with wasmtime sandbox
+#![allow(dead_code)]
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginLoadError {
@@ -49,7 +50,7 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub note_read: bool,
     #[serde(default)]
-    pub note_write: bool,       // Always requires user grant at first write
+    pub note_write: bool, // Always requires user grant at first write
     #[serde(default)]
     pub search_vault: bool,
     #[serde(default)]
@@ -57,19 +58,21 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub graph_read: bool,
     #[serde(default)]
-    pub network: Vec<String>,   // Allowed domains (empty = no network)
+    pub network: Vec<String>, // Allowed domains (empty = no network)
     #[serde(default)]
-    pub fs_read: Vec<String>,   // Allowed paths (empty = no FS access)
+    pub fs_read: Vec<String>, // Allowed paths (empty = no FS access)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmConfig {
-    pub entry: String,          // Relative path to .wasm file
+    pub entry: String, // Relative path to .wasm file
     #[serde(default = "default_memory_pages")]
-    pub memory_pages: u32,      // 64KB per page
+    pub memory_pages: u32, // 64KB per page
 }
 
-fn default_memory_pages() -> u32 { 256 }
+fn default_memory_pages() -> u32 {
+    256
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginInfo {
@@ -84,7 +87,7 @@ pub struct PluginInfo {
 pub struct PluginLoader {
     plugins_dir: PathBuf,
     host_version: String,
-    max_module_size: u64,  // bytes
+    max_module_size: u64, // bytes
 }
 
 impl PluginLoader {
@@ -145,14 +148,18 @@ impl PluginLoader {
         // Check name
         if manifest.name.is_empty() || manifest.name.len() > 64 {
             return Err(PluginLoadError::InvalidManifest(
-                "Plugin name must be 1-64 characters".to_string()
+                "Plugin name must be 1-64 characters".to_string(),
             ));
         }
 
         // Check version format (semver)
-        if !manifest.version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        if !manifest
+            .version
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+        {
             return Err(PluginLoadError::InvalidManifest(
-                "Version must be semver (e.g., 1.0.0)".to_string()
+                "Version must be semver (e.g., 1.0.0)".to_string(),
             ));
         }
 
@@ -194,9 +201,10 @@ impl PluginLoader {
                 if domain.contains('*') && domain != "*" {
                     // Wildcards must be exact-match patterns
                     if domain.matches('*').count() > 1 {
-                        return Err(PluginLoadError::InvalidManifest(
-                            format!("Invalid network domain pattern: {}", domain)
-                        ));
+                        return Err(PluginLoadError::InvalidManifest(format!(
+                            "Invalid network domain pattern: {}",
+                            domain
+                        )));
                     }
                 }
             }
@@ -218,7 +226,7 @@ impl PluginLoader {
         // Validate WASM binary header
         if wasm_bytes.len() < 8 || &wasm_bytes[0..4] != b"\0asm" {
             return Err(PluginLoadError::InvalidManifest(
-                "Invalid WASM binary (missing magic number)".to_string()
+                "Invalid WASM binary (missing magic number)".to_string(),
             ));
         }
 
@@ -236,7 +244,10 @@ impl PluginLoader {
     }
 
     /// Install a plugin from a .tar.gz archive path
-    pub fn install_from_archive(&self, archive_path: &Path) -> Result<PluginManifest, PluginLoadError> {
+    pub fn install_from_archive(
+        &self,
+        archive_path: &Path,
+    ) -> Result<PluginManifest, PluginLoadError> {
         // Extract to temporary directory
         let temp_dir = tempfile::tempdir()?;
         let archive_bytes = fs::read(archive_path)?;
@@ -251,7 +262,7 @@ impl PluginLoader {
         let manifest_path = temp_dir.path().join("plugin.toml");
         if !manifest_path.exists() {
             return Err(PluginLoadError::InvalidManifest(
-                "Archive does not contain plugin.toml".to_string()
+                "Archive does not contain plugin.toml".to_string(),
             ));
         }
 
@@ -271,7 +282,8 @@ impl PluginLoader {
 
     /// Check if a version satisfies the minimum requirement
     fn is_version_compatible(&self, min_version: &str) -> bool {
-        let host_parts: Vec<u32> = self.host_version
+        let host_parts: Vec<u32> = self
+            .host_version
             .split('.')
             .filter_map(|s| s.parse().ok())
             .collect();
@@ -344,10 +356,7 @@ memory_pages = 128
 
     fn setup_loader() -> (PluginLoader, TempDir, PathBuf) {
         let dir = TempDir::new().unwrap();
-        let loader = PluginLoader::new(
-            dir.path().to_str().unwrap(),
-            HOST_VERSION,
-        );
+        let loader = PluginLoader::new(dir.path().to_str().unwrap(), HOST_VERSION);
         let plugin_dir = dir.path().join("test-plugin");
         fs::create_dir_all(&plugin_dir).unwrap();
 
@@ -367,7 +376,9 @@ memory_pages = 128
     #[test]
     fn test_load_valid_manifest() {
         let (loader, _dir, plugin_dir) = setup_loader();
-        let manifest = loader.load_manifest(&plugin_dir.join("plugin.toml")).unwrap();
+        let manifest = loader
+            .load_manifest(&plugin_dir.join("plugin.toml"))
+            .unwrap();
         assert_eq!(manifest.name, "test-plugin");
         assert_eq!(manifest.version, "1.0.0");
         assert!(manifest.capabilities.note_read);
@@ -384,7 +395,9 @@ memory_pages = 128
     #[test]
     fn test_validate_wasm_magic() {
         let (loader, _dir, plugin_dir) = setup_loader();
-        let manifest = loader.load_manifest(&plugin_dir.join("plugin.toml")).unwrap();
+        let manifest = loader
+            .load_manifest(&plugin_dir.join("plugin.toml"))
+            .unwrap();
         let handle = loader.load_wasm(&manifest).unwrap();
         assert_eq!(handle.name, "test-plugin");
         assert!(!handle.compiled);
@@ -395,7 +408,9 @@ memory_pages = 128
         let (loader, _dir, plugin_dir) = setup_loader();
         // Write invalid WASM
         fs::write(plugin_dir.join("plugin.wasm"), b"not a wasm binary").unwrap();
-        let manifest = loader.load_manifest(&plugin_dir.join("plugin.toml")).unwrap();
+        let manifest = loader
+            .load_manifest(&plugin_dir.join("plugin.toml"))
+            .unwrap();
         let result = loader.load_wasm(&manifest);
         assert!(result.is_err());
     }

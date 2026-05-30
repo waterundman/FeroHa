@@ -45,13 +45,13 @@ test.describe("Debug - Visual Inspection", () => {
     await page.waitForTimeout(200);
 
     // Screenshot 5: Graph tab
-    await page.getByText("Graph", { exact: true }).click();
+    await page.locator('button[title="Graph"]').click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: "debug/05-graph-view.png", fullPage: true });
     console.log("Graph view rendered");
 
     // Screenshot 6: Diff tab
-    await page.getByText("Diff", { exact: true }).click();
+    await page.locator('button[title="Diff"]').click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: "debug/06-diff-view.png", fullPage: true });
     console.log("Diff view rendered");

@@ -1,0 +1,104 @@
+.tab-bar {
+  display: flex;
+  align-items: center;
+  height: var(--tab-height);
+  background: var(--tab-bg);
+  border-bottom: 1px solid var(--tab-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-shrink: 0;
+  padding: 0 4px;
+  gap: 2px;
+}
+
+.tab-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: calc(var(--tab-height) - 6px);
+  min-width: 60px;
+  max-width: 200px;
+  padding: 0 8px 0 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--tab-text);
+  font-size: 12px;
+  user-select: none;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+
+.tab-bar-item:hover {
+  background: var(--tab-hover-bg);
+}
+
+.tab-bar-item.active {
+  background: var(--tab-active-bg);
+  color: var(--text-primary);
+  border-color: var(--tab-border);
+  border-bottom: 1px solid var(--tab-active-bg);
+}
+
+.tab-bar-item.split {
+  border-color: var(--accent-primary);
+}
+
+.tab-bar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tab-bar-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tab-dirty-color);
+  flex-shrink: 0;
+}
+
+.tab-bar-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  padding: 0;
+}
+
+.tab-bar-item:hover .tab-bar-close,
+.tab-bar-item.active .tab-bar-close {
+  opacity: 1;
+}
+
+.tab-bar-close:hover {
+  background: var(--tab-close-hover);
+  color: var(--diff-delete);
+}
+
+.tab-bar-split-divider {
+  width: 4px;
+  background: var(--border-color);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.tab-bar-split-divider:hover {
+  background: var(--accent-primary);
+}

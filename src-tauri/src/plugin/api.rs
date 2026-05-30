@@ -1,15 +1,24 @@
 // Plugin API trait — Interface contracts for plugin development
 // Stage 6: API surface definition
+#![allow(dead_code)]
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Lifecycle trait implemented by every plugin
 pub trait Plugin: Send + Sync {
     fn init(&mut self, api: PluginApi) -> Result<(), PluginError>;
-    fn on_enable(&mut self) -> Result<(), PluginError> { Ok(()) }
-    fn on_disable(&mut self) -> Result<(), PluginError> { Ok(()) }
-    fn on_tick(&mut self) -> Result<(), PluginError> { Ok(()) }
-    fn on_uninstall(&mut self) -> Result<(), PluginError> { Ok(()) }
+    fn on_enable(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
+    fn on_disable(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
+    fn on_tick(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
+    fn on_uninstall(&mut self) -> Result<(), PluginError> {
+        Ok(())
+    }
     fn id(&self) -> &str;
     fn version(&self) -> &str;
 }
@@ -43,13 +52,19 @@ pub struct NoteApiClient;
 
 impl NoteApiClient {
     pub fn read(&self, _path: &str) -> Result<String, PluginError> {
-        Err(PluginError::Other("NoteApi::read not connected".to_string()))
+        Err(PluginError::Other(
+            "NoteApi::read not connected".to_string(),
+        ))
     }
     pub fn list(&self) -> Result<Vec<String>, PluginError> {
-        Err(PluginError::Other("NoteApi::list not connected".to_string()))
+        Err(PluginError::Other(
+            "NoteApi::list not connected".to_string(),
+        ))
     }
     pub fn write(&self, _path: &str, _content: &str) -> Result<(), PluginError> {
-        Err(PluginError::Other("NoteApi::write not connected".to_string()))
+        Err(PluginError::Other(
+            "NoteApi::write not connected".to_string(),
+        ))
     }
 }
 
@@ -60,7 +75,9 @@ pub struct SearchApiClient;
 
 impl SearchApiClient {
     pub fn search(&self, _query: &str, _top_k: usize) -> Result<Vec<String>, PluginError> {
-        Err(PluginError::Other("SearchApi::search not connected".to_string()))
+        Err(PluginError::Other(
+            "SearchApi::search not connected".to_string(),
+        ))
     }
 }
 
@@ -71,7 +88,9 @@ pub struct AiApiClient;
 
 impl AiApiClient {
     pub fn submit_task(&self, _task: String) -> Result<String, PluginError> {
-        Err(PluginError::Other("AiApi::submit_task not connected".to_string()))
+        Err(PluginError::Other(
+            "AiApi::submit_task not connected".to_string(),
+        ))
     }
 }
 
@@ -82,7 +101,9 @@ pub struct GraphApiClient;
 
 impl GraphApiClient {
     pub fn get_neighbors(&self, _node: &str) -> Result<Vec<String>, PluginError> {
-        Err(PluginError::Other("GraphApi::get_neighbors not connected".to_string()))
+        Err(PluginError::Other(
+            "GraphApi::get_neighbors not connected".to_string(),
+        ))
     }
 }
 

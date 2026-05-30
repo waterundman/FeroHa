@@ -1,225 +1,39 @@
-import { useState } from "react";
-
-interface PluginEntry {
-  id: string;
-  name: string;
-  version: string;
-  description: string;
-  author: string;
-  enabled: boolean;
-  installedAt: string;
-}
-
 /**
  * PluginSettings — Manage installed plugins
  * Supports install from URL, enable/disable, uninstall
  */
+import { useEffect, useState } from "react";
+
 export default function PluginSettings() {
-  const [plugins, setPlugins] = useState<PluginEntry[]>(() => [
-    {
-      id: "demo-search",
-      name: "Search Enhancer",
-      version: "1.0.0",
-      description: "Enhanced full-text search with regex support",
-      author: "community",
-      enabled: true,
-      installedAt: "2026-05-01",
-    },
-    {
-      id: "demo-export",
-      name: "Export to PDF",
-      version: "0.5.0",
-      description: "Export notes as styled PDF documents",
-      author: "community",
-      enabled: false,
-      installedAt: "2026-05-02",
-    },
-  ]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [showMarketplace, setShowMarketplace] = useState(false);
+  const [status, setStatus] = useState<string>("Checking plugin system...");
+  const [message, setMessage] = useState<string>("Backend plugin infrastructure exists; frontend integration is pending.");
 
-  // Marketplace mock data
-  const marketplacePlugins: PluginEntry[] = [
-    {
-      id: "arxiv-agent",
-      name: "Arxiv Agent",
-      version: "1.2.0",
-      description: "Auto-fetch papers from Arxiv and link to vault",
-      author: "research-team",
-      enabled: false,
-      installedAt: "",
-    },
-    {
-      id: "git-sync",
-      name: "Git Sync",
-      version: "2.0.1",
-      description: "Auto-commit and push vault changes to Git",
-      author: "core-team",
-      enabled: false,
-      installedAt: "",
-    },
-    {
-      id: "mindmap",
-      name: "Mind Map View",
-      version: "0.8.0",
-      description: "Visualize note hierarchy as a mind map",
-      author: "design-team",
-      enabled: false,
-      installedAt: "",
-    },
-  ];
-
-  const togglePlugin = (id: string) => {
-    setPlugins((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p))
-    );
-  };
-
-  const uninstallPlugin = (id: string) => {
-    if (!confirm(`Uninstall "${id}"?`)) return;
-    setPlugins((prev) => prev.filter((p) => p.id !== id));
-  };
-
-  const installFromMarketplace = (plugin: PluginEntry) => {
-    if (plugins.find((p) => p.id === plugin.id)) {
-      alert(`Plugin "${plugin.name}" is already installed.`);
-      return;
-    }
-    setPlugins((prev) => [
-      ...prev,
-      {
-        ...plugin,
-        enabled: false,
-        installedAt: new Date().toISOString().split("T")[0],
-      },
-    ]);
-  };
-
-  const filteredPlugins = plugins.filter(
-    (p) =>
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.description.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const filteredMarketplace = marketplacePlugins.filter(
-    (p) =>
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.description.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  useEffect(() => {
+    let cancelled = false;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<{ status: string; message: string; available_plugins: number }>("plugin_status"))
+      .then((payload) => {
+        if (cancelled) return;
+        setStatus(payload.status);
+        setMessage(`${payload.message} (${payload.available_plugins} available)`);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStatus("Browser mode");
+        setMessage("Plugin backend is only available in the Tauri app.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
-        <div style={styles.tabs}>
-          <button
-            style={{ ...styles.tabBtn, ...(!showMarketplace ? styles.tabActive : {}) }}
-            onClick={() => setShowMarketplace(false)}
-          >
-            Installed ({plugins.length})
-          </button>
-          <button
-            style={{ ...styles.tabBtn, ...(showMarketplace ? styles.tabActive : {}) }}
-            onClick={() => setShowMarketplace(true)}
-          >
-            Marketplace
-          </button>
-        </div>
-        <input
-          style={styles.searchInput}
-          placeholder="Search plugins..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-        />
-      </div>
-
-      {/* Installed plugins */}
-      {!showMarketplace && (
-        <div style={styles.pluginList}>
-          {filteredPlugins.length === 0 && (
-            <div style={styles.empty}>
-              <p>No plugins installed</p>
-              <p style={styles.hint}>Browse the Marketplace to discover plugins</p>
-            </div>
-          )}
-          {filteredPlugins.map((plugin) => (
-            <div key={plugin.id} style={styles.pluginCard}>
-              <div style={styles.pluginInfo}>
-                <div style={styles.pluginHeader}>
-                  <span style={styles.pluginName}>{plugin.name}</span>
-                  <span style={styles.pluginVersion}>v{plugin.version}</span>
-                  {plugin.enabled && (
-                    <span style={styles.enabledBadge}>enabled</span>
-                  )}
-                </div>
-                <p style={styles.pluginDesc}>{plugin.description}</p>
-                <div style={styles.pluginMeta}>
-                  <span>by {plugin.author}</span>
-                  <span>·</span>
-                  <span>Installed {plugin.installedAt}</span>
-                </div>
-              </div>
-              <div style={styles.pluginActions}>
-                <button
-                  style={{
-                    ...styles.actionBtn,
-                    backgroundColor: plugin.enabled ? "#45475a" : "#a6e3a1",
-                    color: plugin.enabled ? "#cdd6f4" : "#1e1e2e",
-                  }}
-                  onClick={() => togglePlugin(plugin.id)}
-                >
-                  {plugin.enabled ? "Disable" : "Enable"}
-                </button>
-                <button
-                  style={{ ...styles.actionBtn, color: "#f38ba8" }}
-                  onClick={() => uninstallPlugin(plugin.id)}
-                >
-                  Uninstall
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Marketplace */}
-      {showMarketplace && (
-        <div style={styles.pluginList}>
-          {filteredMarketplace.length === 0 && (
-            <div style={styles.empty}>No plugins match your search</div>
-          )}
-          {filteredMarketplace.map((plugin) => (
-            <div key={plugin.id} style={styles.pluginCard}>
-              <div style={styles.pluginInfo}>
-                <div style={styles.pluginHeader}>
-                  <span style={styles.pluginName}>{plugin.name}</span>
-                  <span style={styles.pluginVersion}>v{plugin.version}</span>
-                </div>
-                <p style={styles.pluginDesc}>{plugin.description}</p>
-                <div style={styles.pluginMeta}>
-                  <span>by {plugin.author}</span>
-                </div>
-              </div>
-              <div style={styles.pluginActions}>
-                <button
-                  style={{
-                    ...styles.actionBtn,
-                    backgroundColor: "#89b4fa",
-                    color: "#1e1e2e",
-                  }}
-                  onClick={() => installFromMarketplace(plugin)}
-                >
-                  Install
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={styles.footer}>
-        <span style={styles.footerText}>
-          {plugins.filter((p) => p.enabled).length} enabled · {plugins.length} installed
-        </span>
+      <div style={styles.comingSoon}>
+        <h2 style={styles.title}>Plugin system is under development</h2>
+        <p style={styles.subtitle}>
+          {status}: {message || "Backend plugin infrastructure exists; frontend integration is pending."}
+        </p>
       </div>
     </div>
   );
@@ -230,6 +44,27 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100%",
+  },
+  comingSoon: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    flex: 1,
+    padding: "60px 20px",
+    textAlign: "center",
+  },
+  title: {
+    fontSize: "18px",
+    fontWeight: 600,
+    color: "#cdd6f4",
+    margin: "0 0 12px 0",
+  },
+  subtitle: {
+    fontSize: "13px",
+    color: "#6c7086",
+    margin: 0,
+    lineHeight: "1.6",
   },
   header: {
     display: "flex",
@@ -242,7 +77,7 @@ const styles: Record<string, React.CSSProperties> = {
   tabs: { display: "flex", gap: "4px" },
   tabBtn: {
     padding: "3px 12px",
-    background: "transparent",
+    backgroundColor: "transparent",
     color: "#6c7086",
     border: "none",
     borderRadius: "4px",

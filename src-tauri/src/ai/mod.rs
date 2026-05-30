@@ -1,11 +1,19 @@
 // AI Surface module — Vector DB, Agents, RAG, LLM Router, Dream Engine, Skill Manager
-pub mod api_client;
-pub mod vectordb;
-pub mod embedding;
-pub mod chunker;
-pub mod sync_engine;
 pub mod agent_scheduler;
-pub mod rag;
-pub mod llm_router;
+pub mod api_client;
+pub mod chunker;
+pub mod commands;
 pub mod dream_engine;
+pub mod embedding;
+pub mod llm_router;
+pub mod rag;
+pub mod research_trace;
+pub mod sandbox;
+pub mod search_engine;
 pub mod skill_manager;
+pub mod subagent;
+pub mod sync_engine;
+pub mod task_intent;
+pub mod task_scheduler;
+pub mod tool_registry;
+pub mod vectordb;

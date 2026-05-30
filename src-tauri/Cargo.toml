@@ -1,6 +1,6 @@
 [package]
 name = "feroha"
-version = "0.2.1"
+version = "3.0.0"
 description = "FeroHa - Dual-Track AI Note IDE"
 authors = ["you"]
 edition = "2021"
@@ -23,12 +23,14 @@ tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 notify = { version = "6", features = ["macos_kqueue"] }
 pulldown-cmark = "0.11"
 pulldown-cmark-to-cmark = "13"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 thiserror = "1"
 hex = "0.4"
@@ -39,8 +41,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 
+async-trait = "0.1"
+
 # AI Surface dependencies
-# lance = "0.14"       # LanceDB embedded — uncomment when LanceDB Rust API stabilizes
+rusqlite = { version = "0.39", features = ["bundled"] }
+# lance = "0.14"       # LanceDB embedded — enable with --features lancedb
 # ort = "2"            # ONNX Runtime for local embedding models — opt-in
 
 # Plugin System dependencies (Stage 6)
@@ -49,6 +54,10 @@ flate2 = "1"
 tar = "0.4"
 tempfile = "3"
 # wasmtime = "22"      # WASM runtime — uncomment for Stage 6 production build
+
+# Full-text search (Stage 3 — Tantivy)
+tantivy = "0.22"
+tantivy-jieba = "0.11"
 
 [dev-dependencies]
 tempfile = "3"

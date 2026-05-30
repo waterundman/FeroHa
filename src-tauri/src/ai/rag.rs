@@ -1,9 +1,10 @@
 // RAG (Retrieval-Augmented Generation) Pipeline
 // Stage 4: Hybrid retrieval combining vector search + graph traversal + keyword search
 
-use serde::{Serialize, Deserialize};
-use super::vectordb::{VectorStore, SearchResult};
+use super::vectordb::{SearchResult, VectorStore};
 use crate::graph::link_graph::LinkGraph;
+use crate::harness::context::{ContextFragment, ContextLayer, ContextSource};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalContext {
@@ -14,22 +15,22 @@ pub struct RetrievalContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RetrievalSource {
-    VectorMatch,     // Direct semantic match
-    GraphNeighbor,   // Retrieved via link graph traversal
-    KeywordMatch,    // Full-text keyword match
-    HeadingContext,  // Retrieved because of shared heading
+    VectorMatch,    // Direct semantic match
+    GraphNeighbor,  // Retrieved via link graph traversal
+    KeywordMatch,   // Full-text keyword match
+    HeadingContext, // Retrieved because of shared heading
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagQuery {
     pub query_text: String,
-    pub anchor_links: Vec<String>,     // [[wikilinks]] that triggered the query
+    pub anchor_links: Vec<String>, // [[wikilinks]] that triggered the query
     pub max_results: usize,
-    pub include_neighbors: bool,       // Expand via graph neighbors
-    pub neighbor_depth: usize,         // How many hops in graph
-    pub vector_weight: f32,            // 0.0 - 1.0 contribution of vector search
-    pub graph_weight: f32,             // 0.0 - 1.0 contribution of graph traversal
-    pub keyword_weight: f32,           // 0.0 - 1.0 contribution of keyword search
+    pub include_neighbors: bool, // Expand via graph neighbors
+    pub neighbor_depth: usize,   // How many hops in graph
+    pub vector_weight: f32,      // 0.0 - 1.0 contribution of vector search
+    pub graph_weight: f32,       // 0.0 - 1.0 contribution of graph traversal
+    pub keyword_weight: f32,     // 0.0 - 1.0 contribution of keyword search
 }
 
 impl Default for RagQuery {
@@ -47,6 +48,31 @@ impl Default for RagQuery {
     }
 }
 
+impl RetrievalContext {
+    #[allow(dead_code)]
+    pub fn to_fragment(&self) -> ContextFragment {
+        let key = format!("rag.{}", self.chunk.chunk_id);
+        let value = serde_json::json!({
+            "chunk_id": self.chunk.chunk_id,
+            "chunk_text": self.chunk.chunk_text,
+            "source_file": self.chunk.source_file,
+            "heading_context": self.chunk.heading_context,
+            "relevance_score": self.relevance_score,
+        });
+        let hash = ContextFragment::compute_hash(&key, &value);
+        ContextFragment {
+            id: format!("rag-{}", self.chunk.chunk_id),
+            key,
+            value,
+            source: ContextSource::RAG,
+            layer: ContextLayer::Note,
+            created_at: chrono::Utc::now().timestamp_millis() as u64,
+            ttl: Some(3600 * 1000),
+            hash,
+        }
+    }
+}
+
 /// Hybrid RAG Pipeline
 ///
 /// Retrieval strategy:
@@ -55,20 +81,21 @@ impl Default for RagQuery {
 ///   3. Keyword search: SQLite FTS5 fallback
 ///
 /// Results are merged, de-duplicated, and re-ranked by weighted score.
-pub struct RagPipeline {
-    vector_store: VectorStore,
-    link_graph: Option<LinkGraph>,
+pub struct RagPipeline<'a> {
+    vector_store: &'a VectorStore,
+    link_graph: Option<&'a LinkGraph>,
 }
 
-impl RagPipeline {
-    pub fn new(vector_store: VectorStore) -> Self {
+impl<'a> RagPipeline<'a> {
+    pub fn new(vector_store: &'a VectorStore) -> Self {
         RagPipeline {
             vector_store,
             link_graph: None,
         }
     }
 
-    pub fn with_graph(mut self, graph: LinkGraph) -> Self {
+    #[allow(dead_code)]
+    pub fn with_graph(mut self, graph: &'a LinkGraph) -> Self {
         self.link_graph = Some(graph);
         self
     }
@@ -99,7 +126,9 @@ impl RagPipeline {
 
         // 5. Sort by relevance score (descending)
         results.sort_by(|a, b| {
-            b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal)
+            b.relevance_score
+                .partial_cmp(&a.relevance_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // 6. Truncate to max results
@@ -112,7 +141,9 @@ impl RagPipeline {
     fn vector_search(&self, query: &RagQuery) -> Vec<RetrievalContext> {
         // Stage 3: use actual embedding + vector search
         // Stage 0-4: text-based search as development fallback
-        let raw_results = self.vector_store.search_text(&query.query_text, query.max_results);
+        let raw_results = self
+            .vector_store
+            .search_text(&query.query_text, query.max_results);
 
         raw_results
             .into_iter()
@@ -141,7 +172,9 @@ impl RagPipeline {
                 // Get backlinks (notes pointing TO this note)
                 let backlinks = graph.get_backlinks(note_id);
                 for bl in &backlinks {
-                    if visited.contains(bl) { continue; }
+                    if visited.contains(bl) {
+                        continue;
+                    }
                     next_frontier.push(bl.clone());
 
                     // Create a synthetic search result from graph neighbor
@@ -168,7 +201,9 @@ impl RagPipeline {
 
     /// Keyword search fallback (SQLite FTS5 or simple text matching)
     fn keyword_search(&self, query: &RagQuery) -> Vec<RetrievalContext> {
-        let raw_results = self.vector_store.search_text(&query.query_text, query.max_results / 2);
+        let raw_results = self
+            .vector_store
+            .search_text(&query.query_text, query.max_results / 2);
 
         raw_results
             .into_iter()
@@ -188,33 +223,39 @@ mod tests {
 
     fn make_store() -> VectorStore {
         let mut store = VectorStore::new(":memory:");
-        store.upsert(ChunkRecord {
-            id: "c1".to_string(),
-            content_hash: 1,
-            chunk_text: "Rust is a systems programming language with zero-cost abstractions.".to_string(),
-            embedding: vec![],
-            source_file: "rust.md".to_string(),
-            heading_context: "Introduction".to_string(),
-            created_at: 0,
-            updated_at: 0,
-        });
-        store.upsert(ChunkRecord {
-            id: "c2".to_string(),
-            content_hash: 2,
-            chunk_text: "Tauri enables building desktop apps with web technologies.".to_string(),
-            embedding: vec![],
-            source_file: "tauri.md".to_string(),
-            heading_context: "Overview".to_string(),
-            created_at: 0,
-            updated_at: 0,
-        });
+        store
+            .upsert(ChunkRecord {
+                id: "c1".to_string(),
+                content_hash: 1,
+                chunk_text: "Rust is a systems programming language with zero-cost abstractions."
+                    .to_string(),
+                embedding: vec![],
+                source_file: "rust.md".to_string(),
+                heading_context: "Introduction".to_string(),
+                created_at: 0,
+                updated_at: 0,
+            })
+            .unwrap();
+        store
+            .upsert(ChunkRecord {
+                id: "c2".to_string(),
+                content_hash: 2,
+                chunk_text: "Tauri enables building desktop apps with web technologies."
+                    .to_string(),
+                embedding: vec![],
+                source_file: "tauri.md".to_string(),
+                heading_context: "Overview".to_string(),
+                created_at: 0,
+                updated_at: 0,
+            })
+            .unwrap();
         store
     }
 
     #[test]
     fn test_retrieve_vector_only() {
         let store = make_store();
-        let pipeline = RagPipeline::new(store);
+        let pipeline = RagPipeline::new(&store);
 
         let query = RagQuery {
             query_text: "Rust programming".to_string(),
@@ -235,7 +276,7 @@ mod tests {
         // tauri.md links to rust.md (tauri -> rust)
         graph.add_link("tauri.md", "rust.md");
 
-        let pipeline = RagPipeline::new(store).with_graph(graph);
+        let pipeline = RagPipeline::new(&store).with_graph(&graph);
 
         let query = RagQuery {
             query_text: "desktop".to_string(),
@@ -248,13 +289,15 @@ mod tests {
 
         let results = pipeline.retrieve(&query);
         // Should include graph neighbors (backlinks to rust.md)
-        assert!(results.iter().any(|r| matches!(r.source, RetrievalSource::GraphNeighbor)));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r.source, RetrievalSource::GraphNeighbor)));
     }
 
     #[test]
     fn test_deduplication() {
         let store = make_store();
-        let pipeline = RagPipeline::new(store);
+        let pipeline = RagPipeline::new(&store);
 
         let query = RagQuery {
             query_text: "rust".to_string(),

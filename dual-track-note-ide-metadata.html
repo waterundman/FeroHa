@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PROJECT METADATA — Dual-Track AI Note IDE</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,300&family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:         #0d0f12;
+    --bg2:        #13161b;
+    --bg3:        #1b1f26;
+    --border:     #252a34;
+    --border2:    #2e3545;
+    --text:       #c8d0dc;
+    --text-dim:   #5c6a7e;
+    --text-muted: #3a4455;
+    --accent:     #4a8fff;
+    --accent2:    #2860c4;
+    --warn:       #e8a33a;
+    --ok:         #3ecf78;
+    --red:        #e05a5a;
+    --tag-bg:     #162235;
+    --tag-border: #1e3050;
+    --mono:       'IBM Plex Mono', monospace;
+    --serif:      'Noto Serif SC', serif;
+    --gutter:     48px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 14px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    padding: 0 0 80px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── TOP RULE ── */
+  .top-bar {
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent2), var(--accent), #7bb8ff, var(--accent2));
+    background-size: 300% 100%;
+    animation: slide-bar 6s linear infinite;
+  }
+  @keyframes slide-bar {
+    0%   { background-position: 0% 0%; }
+    100% { background-position: 300% 0%; }
+  }
+
+  /* ── WRAPPER ── */
+  .wrapper {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 var(--gutter);
+  }
+
+  /* ── HEADER ── */
+  header {
+    padding: 52px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+  }
+
+  .doc-class {
+    font-size: 10px;
+    letter-spacing: .18em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .doc-class::before {
+    content: '';
+    display: inline-block;
+    width: 28px; height: 1px;
+    background: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 500;
+    color: #e8eef7;
+    letter-spacing: -.01em;
+    line-height: 1.25;
+    margin-bottom: 10px;
+  }
+  h1 em {
+    font-style: normal;
+    color: var(--text-dim);
+    font-weight: 300;
+    font-size: 22px;
+  }
+
+  .subtitle {
+    font-family: var(--serif);
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    letter-spacing: .04em;
+  }
+
+  .meta-strip {
+    display: flex;
+    gap: 32px;
+    margin-top: 24px;
+    flex-wrap: wrap;
+  }
+  .meta-kv {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .meta-kv .k {
+    font-size: 9px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .meta-kv .v {
+    font-size: 12px;
+    color: var(--text);
+  }
+  .status-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+    box-shadow: 0 0 6px var(--warn);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; } 50% { opacity: .4; }
+  }
+
+  /* ── SECTIONS ── */
+  section {
+    padding: 36px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section:last-of-type { border-bottom: none; }
+
+  .section-label {
+    font-size: 9px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 22px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border2);
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: #b0bfcf;
+    margin-bottom: 10px;
+    letter-spacing: .06em;
+  }
+
+  p, li {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.75;
+  }
+
+  /* ── CONCEPT CARD ── */
+  .concept-card {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-left: 3px solid var(--accent);
+    padding: 18px 22px;
+    margin: 20px 0;
+    border-radius: 2px;
+  }
+  .concept-card p {
+    font-family: var(--serif);
+    font-size: 13.5px;
+    color: #b8c8dc;
+    line-height: 1.8;
+  }
+
+  /* ── DUAL TRACK DIAGRAM ── */
+  .diagram {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 28px 24px;
+    margin: 24px 0;
+  }
+  .track-row {
+    display: grid;
+    grid-template-columns: 1fr 40px 1fr;
+    gap: 0;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .track {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    padding: 14px 16px;
+  }
+  .track.human { border-top: 2px solid var(--ok); }
+  .track.ai    { border-top: 2px solid var(--accent); }
+  .track-title {
+    font-size: 10px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .human .track-title { color: var(--ok); }
+  .ai    .track-title { color: var(--accent); }
+  .track ul { list-style: none; }
+  .track ul li {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    padding: 2px 0;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+  .track ul li::before {
+    content: '·';
+    color: var(--text-muted);
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .protocol-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .proto-arrow {
+    font-size: 18px;
+    color: var(--warn);
+    line-height: 1;
+  }
+  .proto-label {
+    font-size: 9px;
+    color: var(--warn);
+    letter-spacing: .1em;
+    text-align: center;
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+  }
+
+  /* ── TABLE ── */
+  .field-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+  }
+  .field-table th {
+    font-size: 9px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border2);
+    font-weight: 400;
+  }
+  .field-table td {
+    font-size: 12px;
+    color: var(--text);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .field-table tr:last-child td { border-bottom: none; }
+  .field-table td:first-child {
+    color: var(--text-dim);
+    white-space: nowrap;
+    width: 180px;
+  }
+  .field-table td code {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--tag-bg);
+    border: 1px solid var(--tag-border);
+    padding: 1px 6px;
+    border-radius: 2px;
+    color: var(--accent);
+  }
+
+  /* ── MODULE GRID ── */
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .module-card {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    padding: 16px 18px;
+  }
+  .module-card .mod-id {
+    font-size: 9px;
+    color: var(--text-muted);
+    letter-spacing: .12em;
+    margin-bottom: 6px;
+  }
+  .module-card .mod-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #c0d0e0;
+    margin-bottom: 8px;
+  }
+  .module-card .mod-desc {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    line-height: 1.65;
+  }
+  .module-card .mod-tech {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .tag {
+    font-size: 10px;
+    background: var(--tag-bg);
+    border: 1px solid var(--tag-border);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 2px;
+  }
+  .tag.warn { background: #1e1600; border-color: #3a2800; color: var(--warn); }
+  .tag.ok   { background: #0b1e13; border-color: #0f2e1a; color: var(--ok); }
+
+  /* ── FLOW ── */
+  .flow {
+    margin: 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .flow-step {
+    display: flex;
+    gap: 0;
+  }
+  .flow-num {
+    width: 32px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .flow-circle {
+    width: 22px; height: 22px;
+    border: 1px solid var(--border2);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    background: var(--bg2);
+    position: relative;
+    z-index: 1;
+  }
+  .flow-line {
+    flex: 1;
+    width: 1px;
+    background: var(--border);
+    margin: 0 auto;
+  }
+  .flow-content {
+    padding: 2px 0 20px 14px;
+    flex: 1;
+  }
+  .flow-content .f-title {
+    font-size: 12px;
+    color: #a8bdd0;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .flow-content .f-body {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    line-height: 1.65;
+  }
+  .flow-content .f-body code {
+    font-family: var(--mono);
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    padding: 0 5px;
+    border-radius: 2px;
+    font-size: 11px;
+    color: var(--accent);
+  }
+
+  /* ── RISK TABLE ── */
+  .risk-row td:first-child { width: 220px; }
+  .risk-row td:nth-child(2) { color: var(--text-dim); font-size: 11.5px; }
+  .risk-row td:last-child { color: var(--ok); font-size: 11.5px; }
+  .badge {
+    display: inline-block;
+    font-size: 9px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 2px;
+  }
+  .badge-high { background: #2a1010; border: 1px solid #4a1c1c; color: var(--red); }
+  .badge-med  { background: #211800; border: 1px solid #3d2e00; color: var(--warn); }
+  .badge-low  { background: var(--tag-bg); border: 1px solid var(--tag-border); color: var(--text-dim); }
+
+  /* ── FOOTER ── */
+  footer {
+    margin-top: 60px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: gap;
+  }
+  footer span {
+    font-size: 10px;
+    color: var(--text-muted);
+    letter-spacing: .1em;
+  }
+  .footer-id {
+    font-size: 10px;
+    color: var(--border2);
+    letter-spacing: .06em;
+  }
+
+  /* ── BLOCKQUOTE ── */
+  blockquote {
+    border-left: 2px solid var(--border2);
+    padding: 2px 0 2px 16px;
+    margin: 12px 0;
+    font-family: var(--serif);
+    font-size: 12.5px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  @media (max-width: 640px) {
+    :root { --gutter: 20px; }
+    .module-grid { grid-template-columns: 1fr; }
+    .track-row { grid-template-columns: 1fr; }
+    .protocol-col { flex-direction: row; writing-mode: horizontal-tb; }
+  }
+</style>
+</head>
+<body>
+
+<div class="top-bar"></div>
+
+<div class="wrapper">
+
+  <header>
+    <div class="doc-class">Project Metadata Document</div>
+    <h1>Dual-Track AI Note IDE<br><em>双轨制 AI 原生笔记系统</em></h1>
+    <p class="subtitle">人类面与 AI 面的物理隔离、协议互通的内容管理架构</p>
+    <div class="meta-strip">
+      <div class="meta-kv">
+        <span class="k">状态 Status</span>
+        <span class="v status-dot"><span class="dot"></span>概念设计阶段</span>
+      </div>
+      <div class="meta-kv">
+        <span class="k">项目类型</span>
+        <span class="v">桌面客户端 · 内容管理系统</span>
+      </div>
+      <div class="meta-kv">
+        <span class="k">技术基座</span>
+        <span class="v">Tauri 2.0 · Rust · TypeScript</span>
+      </div>
+      <div class="meta-kv">
+        <span class="k">参照系统</span>
+        <span class="v">Obsidian · Git PR 模型</span>
+      </div>
+    </div>
+  </header>
+
+
+  <!-- ── 01 OVERVIEW ── -->
+  <section>
+    <div class="section-label">01 · 项目概述</div>
+
+    <div class="concept-card">
+      <p>现有"AI 笔记"工具的核心误区在于将 AI 生成内容与人类思考直接混排，导致知识污染与认知噪声。本项目通过将存储层、访问权限与数据流彻底分轨，使 AI 面作为人类面的知识扩展超集，而非侵入者。两者之间通过显式协议（PR 式 Merge）进行受控的知识跃迁。</p>
+    </div>
+
+    <table class="field-table">
+      <tr><th>字段</th><th>内容</th></tr>
+      <tr><td>项目定位</td><td>Local-first 桌面 IDE，兼具笔记管理与 AI 内容管理功能</td></tr>
+      <tr><td>核心问题</td><td>AI 写作数据流量大、产出冗余，若与人类笔记混存会导致语料稀释与"AI 抢权"</td></tr>
+      <tr><td>解决思路</td><td>物理隔离两面存储；AI 面仅持有读权限，人类面绝对控制写入；通过 Diff/Merge 协议实现单向知识提炼</td></tr>
+      <tr><td>个人需求来源</td><td>Obsidian Vault 随开发迭代持续膨胀，现有 skill 写入机制不可预期，需将 AI 数据流与人类写作彻底解耦</td></tr>
+    </table>
+  </section>
+
+
+  <!-- ── 02 ARCHITECTURE ── -->
+  <section>
+    <div class="section-label">02 · 双轨架构</div>
+
+    <div class="diagram">
+      <div class="track-row">
+        <div class="track human">
+          <div class="track-title">Human Sub-graph · 人类面</div>
+          <ul>
+            <li>本地 <code>.md</code> 纯文本文件系统</li>
+            <li>人类绝对写入控制权</li>
+            <li>AI 仅持有只读访问权</li>
+            <li><code>[[双向链接]]</code> 作为扩展锚点</li>
+            <li>知识图谱主干节点</li>
+          </ul>
+        </div>
+        <div class="protocol-col">
+          <span class="proto-arrow">↔</span>
+          <span class="proto-label">Protocol</span>
+        </div>
+        <div class="track ai">
+          <div class="track-title">AI Super-graph · AI 面</div>
+          <ul>
+            <li>LanceDB / Qdrant 向量数据库</li>
+            <li>SQLite 关系图（幽灵节点）</li>
+            <li>Agentic 爬虫 + RAG 检索引擎</li>
+            <li>AgentCLI 指令调度层</li>
+            <li>Dreaming 分时整理功能</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);">
+        <div style="font-size: 10px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:10px;">双面协议层 · Dual-Face Protocol</div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+          <div style="background:var(--bg3); border:1px solid var(--border2); padding:10px 12px; border-radius:2px;">
+            <div style="font-size:10px; color:var(--warn); letter-spacing:.1em; margin-bottom:4px;">WRITE ASSIST</div>
+            <div style="font-size:11px; color:var(--text-dim);">人类通过 AI 面数据实现写作补全辅助</div>
+          </div>
+          <div style="background:var(--bg3); border:1px solid var(--border2); padding:10px 12px; border-radius:2px;">
+            <div style="font-size:10px; color:var(--warn); letter-spacing:.1em; margin-bottom:4px;">TOPIC EXTRACT</div>
+            <div style="font-size:11px; color:var(--text-dim);">AI 面定期向人类面提取议题，触发研究任务</div>
+          </div>
+          <div style="background:var(--bg3); border:1px solid var(--border2); padding:10px 12px; border-radius:2px;">
+            <div style="font-size:10px; color:var(--warn); letter-spacing:.1em; margin-bottom:4px;">MERGE GATE</div>
+            <div style="font-size:11px; color:var(--text-dim);">PR 式 Accept/Reject，逐句控制知识跃迁方向</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ── 03 TECH STACK ── -->
+  <section>
+    <div class="section-label">03 · 技术选型</div>
+
+    <table class="field-table">
+      <tr>
+        <th>层级</th><th>选型</th><th>说明</th>
+      </tr>
+      <tr>
+        <td>宿主框架</td>
+        <td><code>Tauri 2.0</code></td>
+        <td>跨平台桌面端，未来可编译移动端；相比 Electron 显著降低内存占用</td>
+      </tr>
+      <tr>
+        <td>核心逻辑层</td>
+        <td><code>Rust</code></td>
+        <td>处理高 CPU 消耗的文件监听、AST 解析、向量计算、Agent 调度</td>
+      </tr>
+      <tr>
+        <td>UI 表现层</td>
+        <td><code>TypeScript + React / Vue3</code></td>
+        <td>编辑器内核：ProseMirror 或 CodeMirror 6（AST 拦截支持好）</td>
+      </tr>
+      <tr>
+        <td>人类面存储</td>
+        <td>本地文件系统 <code>.md</code></td>
+        <td>纯文本抗脆弱，文件系统即数据库，LLM 的最佳通用接口</td>
+      </tr>
+      <tr>
+        <td>AI 面向量库</td>
+        <td><code>LanceDB</code> / <code>Qdrant</code></td>
+        <td>嵌入式，Rust/C++ 底层，查询速度快；LanceDB 优先（嵌入零依赖）</td>
+      </tr>
+      <tr>
+        <td>AI 面关系图</td>
+        <td><code>SQLite</code> + JSON</td>
+        <td>轻量图结构，存储幽灵节点与锚点关系映射</td>
+      </tr>
+      <tr>
+        <td>文件监听</td>
+        <td>Rust <code>notify</code></td>
+        <td>实时监控 Vault 变动，触发增量 AST 解析</td>
+      </tr>
+      <tr>
+        <td>Markdown 解析</td>
+        <td>Rust <code>pulldown-cmark</code></td>
+        <td>毫秒级解析为 AST，提取 Heading / Block / Link</td>
+      </tr>
+      <tr>
+        <td>LLM 接入</td>
+        <td>LLM Router API</td>
+        <td>支持本地模型加载器与云端闭源模型，解耦可替换</td>
+      </tr>
+    </table>
+
+    <blockquote>技术选型原则：Rust 将沉重的 AI 处理全部压在"水面之下"，前端只暴露最纯净的 Markdown 与极客风格的 CLI。</blockquote>
+  </section>
+
+
+  <!-- ── 04 MODULES ── -->
+  <section>
+    <div class="section-label">04 · 核心模块</div>
+    <div class="module-grid">
+
+      <div class="module-card">
+        <div class="mod-id">MOD-01</div>
+        <div class="mod-name">人类面存储与解析</div>
+        <div class="mod-desc">文件监听 → AST 解析 → 静默语义分块（Chunking）→ 打哈希时间戳 → 向量化准备。<code>notify</code> 实时监控，<code>pulldown-cmark</code> 毫秒级解析。</div>
+        <div class="mod-tech">
+          <span class="tag">notify</span>
+          <span class="tag">pulldown-cmark</span>
+          <span class="tag ok">Human-only Write</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="mod-id">MOD-02</div>
+        <div class="mod-name">AI 面 Agentic 后台</div>
+        <div class="mod-desc">Rust 后台线程异步调度。以 <code>[[锚点]]</code> 为触发器，执行 Web 检索 / Arxiv 抓取 / API 调用，产出物以"幽灵节点"形式写入 VectorDB，绝不直接修改人类 Markdown。</div>
+        <div class="mod-tech">
+          <span class="tag">LanceDB</span>
+          <span class="tag">RAG</span>
+          <span class="tag warn">Ghost Nodes</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="mod-id">MOD-03</div>
+        <div class="mod-name">AgentCLI 指令层</div>
+        <div class="mod-desc">前端监听 <code>/</code> 起手式弹出补全提示。指令通过 Tauri <code>invoke</code> 传递给 Rust，异步执行后以 <code>emit_all</code> 推回前端状态。键盘驱动，无干扰写作。</div>
+        <div class="mod-tech">
+          <span class="tag">Tauri IPC</span>
+          <span class="tag">invoke</span>
+          <span class="tag">emit_all</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="mod-id">MOD-04</div>
+        <div class="mod-name">Visual Diff & Merge</div>
+        <div class="mod-desc">PR 式知识吸收机制。Rust 维护当前 AST 与 AI 增量 AST。前端双栏或行内高亮差异，用户原子化逐句 Accept / Reject，采纳后 Rust 重写物理 <code>.md</code> 文件。</div>
+        <div class="mod-tech">
+          <span class="tag">Diff Engine</span>
+          <span class="tag ok">Merge Gate</span>
+          <span class="tag">Block-ID Hash</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="mod-id">MOD-05</div>
+        <div class="mod-name">Dreaming 分时整理</div>
+        <div class="mod-desc">AI 面在特定时间段（低活跃窗口）自动对已积累的内容进行重组、归类与压缩，防止 AI 面数据熵增失控。类比"睡眠记忆巩固"机制。</div>
+        <div class="mod-tech">
+          <span class="tag warn">Scheduled</span>
+          <span class="tag">Content Compression</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="mod-id">MOD-06</div>
+        <div class="mod-name">双图层知识图谱</div>
+        <div class="mod-desc">人类面使用标准 Markdown 渲染器；AI 面使用富表现力前端组件（图表、思维导图、3D 节点），专门呈现高维或复杂结构数据，避免信息过载。</div>
+        <div class="mod-tech">
+          <span class="tag">Graph View</span>
+          <span class="tag">Dual Render</span>
+          <span class="tag">3D Node</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ── 05 WORKFLOW ── -->
+  <section>
+    <div class="section-label">05 · 核心工作流</div>
+
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num">
+          <div class="flow-circle">1</div>
+          <div class="flow-line"></div>
+        </div>
+        <div class="flow-content">
+          <div class="f-title">Write & Map · 写作与静默映射</div>
+          <div class="f-body">用户在编辑器中写作 → Rust 监听到保存 → <code>pulldown-cmark</code> 解析 AST → 提取关键 Block 与链接锚点 → 生成向量 → 存入本地 LanceDB。用户无感知。</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">
+          <div class="flow-circle">2</div>
+          <div class="flow-line"></div>
+        </div>
+        <div class="flow-content">
+          <div class="f-title">CLI Trigger · 指令下达</div>
+          <div class="f-body">用户输入 <code>/agent fetch-papers --topic "..." --link-to [[当前文档]]</code> → 前端封装为 IPC JSON → <code>invoke</code> 传给 Rust → Rust 开启异步任务 → UI 显示 <code>[Agent 运行中...]</code> → 用户继续无干扰写作。</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">
+          <div class="flow-circle">3</div>
+          <div class="flow-line"></div>
+        </div>
+        <div class="flow-content">
+          <div class="f-title">Graph Population · 图谱补全</div>
+          <div class="f-body">Rust Agent 调用 LLM 与检索引擎 → 获取文献 / 资料 → 切块 → 在 VectorDB + GraphDB 中生成"幽灵节点" → 与用户文档建立单向链接。不写入任何人类面文件。</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">
+          <div class="flow-circle">4</div>
+          <div class="flow-line"></div>
+        </div>
+        <div class="flow-content">
+          <div class="f-title">Review & Merge · 审阅与合并</div>
+          <div class="f-body">系统通知抓取完成 → 用户点击 Review → 前端调出 Visual Diff 组件 → 双栏对比 AI 增量与原文 → 用户逐句 Accept / Reject → 点击 Merge → Rust 将采纳内容写入物理 <code>.md</code> → 知识完成人类面跃迁。</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">
+          <div class="flow-circle">5</div>
+        </div>
+        <div class="flow-content">
+          <div class="f-title">Dreaming · 分时整理（后台）</div>
+          <div class="f-body">在用户低活跃时间窗口，AI 面自动对积累的幽灵节点进行重组、压缩与主题归类，保持 AI 面数据的精炼性，防止熵增。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ── 06 RISKS ── -->
+  <section>
+    <div class="section-label">06 · 关键挑战与策略</div>
+
+    <table class="field-table risk-row">
+      <tr>
+        <th>挑战</th><th>风险等级</th><th>当前策略</th>
+      </tr>
+      <tr>
+        <td>Markdown AST 差异合并精确性<br><span style="font-size:10.5px; color:var(--text-muted)">自然语言无大括号边界，段落对齐困难</span></td>
+        <td><span class="badge badge-high">High</span></td>
+        <td>引入 Block 级 ID（隐式哈希值 <code>^abc12</code>），Diff 引擎按 Block ID 精准对齐，避免错位</td>
+      </tr>
+      <tr>
+        <td>高频编辑 IPC 通信开销<br><span style="font-size:10.5px; color:var(--text-muted)">频繁按键触发大量序列化导致卡顿</span></td>
+        <td><span class="badge badge-med">Med</span></td>
+        <td>前端编辑器与 Rust 核心之间增加 Debounce 防抖，仅在输入停顿（idle）时执行增量解析与向量同步</td>
+      </tr>
+      <tr>
+        <td>AI 面上下文感知精度<br><span style="font-size:10.5px; color:var(--text-muted)">避免纯关键词 RAG 导致生硬匹配</span></td>
+        <td><span class="badge badge-med">Med</span></td>
+        <td>以 AST 逻辑大纲而非关键词作为检索锚点，结合图结构进行局部语义理解</td>
+      </tr>
+      <tr>
+        <td>AI 面数据熵增<br><span style="font-size:10.5px; color:var(--text-muted)">幽灵节点持续积累，质量稀释</span></td>
+        <td><span class="badge badge-low">Low</span></td>
+        <td>Dreaming 定时压缩与归类机制，保持 AI 面数据精炼度</td>
+      </tr>
+    </table>
+  </section>
+
+
+  <!-- ── 07 DESIGN REFS ── -->
+  <section>
+    <div class="section-label">07 · 设计参照与差异化</div>
+
+    <table class="field-table">
+      <tr><th>参照</th><th>借鉴要素</th><th>本项目差异</th></tr>
+      <tr>
+        <td>Obsidian</td>
+        <td>Local-first 数据主权；双向链接网状结构；微内核插件化架构；结构与表现分离</td>
+        <td>在 Obsidian 哲学之上增加 AI 面物理隔离层与双轨协议；AI 不作为"内容生成器"嵌入，而是作为独立数据层</td>
+      </tr>
+      <tr>
+        <td>Git / GitHub PR</td>
+        <td>Branch（AI 面）→ Main（人类面）的知识流转模型；Visual Diff；原子化 Accept/Reject</td>
+        <td>将 PR 机制应用于自然语言知识管理，而非代码版本控制</td>
+      </tr>
+      <tr>
+        <td>Notion AI / Mem</td>
+        <td>AI 辅助写作场景</td>
+        <td>上述工具将 AI 输出直接混入人类写作区，本项目视之为"知识污染"，通过物理隔离彻底规避</td>
+      </tr>
+    </table>
+  </section>
+
+
+  <footer>
+    <span>DUAL-TRACK AI NOTE IDE · PROJECT METADATA v0.1</span>
+    <span class="footer-id">STATUS: CONCEPT · NOT IMPLEMENTED</span>
+  </footer>
+
+</div>
+
+</body>
+</html>

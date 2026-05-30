@@ -1,8 +1,8 @@
 // Markdown AST Parser — pulldown-cmark wrapper with structural extraction
 
-use pulldown_cmark::{Parser, Event, Tag, TagEnd, HeadingLevel};
-use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Structured representation of a Markdown document's AST
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +14,7 @@ pub struct MarkdownAst {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Heading {
     pub level: u8,
     pub text: String,
@@ -51,6 +52,7 @@ pub enum BlockType {
 }
 
 /// Parse a Markdown string into structured AST
+#[allow(dead_code)]
 pub fn parse_markdown(content: &str) -> MarkdownAst {
     let parser = Parser::new(content);
     let mut ast = MarkdownAst {
@@ -66,73 +68,72 @@ pub fn parse_markdown(content: &str) -> MarkdownAst {
 
     for event in parser {
         match event {
-            Event::Start(tag) => {
-                match tag {
-                    Tag::Heading { level, .. } => {
-                        // Flush previous text block
-                        flush_block(&mut ast, &mut current_text, &current_heading, block_position);
-                        block_position += current_text.len();
-                        current_text.clear();
+            Event::Start(Tag::Heading { level, .. }) => {
+                // Flush previous text block
+                flush_block(
+                    &mut ast,
+                    &mut current_text,
+                    &current_heading,
+                    block_position,
+                );
+                block_position += current_text.len();
+                current_text.clear();
 
-                        let level = match level {
-                            HeadingLevel::H1 => 1,
-                            HeadingLevel::H2 => 2,
-                            HeadingLevel::H3 => 3,
-                            HeadingLevel::H4 => 4,
-                            HeadingLevel::H5 => 5,
-                            HeadingLevel::H6 => 6,
-                        };
-                        ast.headings.push(Heading {
-                            level,
-                            text: String::new(), // filled in on End
-                            block_id: generate_block_id(""),
-                            position: block_position,
-                        });
-                    }
-                    _ => {}
-                }
+                let level = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                };
+                ast.headings.push(Heading {
+                    level,
+                    text: String::new(), // filled in on End
+                    block_id: generate_block_id(""),
+                    position: block_position,
+                });
             }
-            Event::End(tag) => {
-                match tag {
-                    TagEnd::Heading(level) => {
-                        if let Some(heading) = ast.headings.last_mut() {
-                            current_heading = Some(heading.text.clone());
-                        }
+            Event::Start(_) => {}
+            Event::End(tag) => match tag {
+                TagEnd::Heading(level) => {
+                    if let Some(heading) = ast.headings.last_mut() {
+                        current_heading = Some(heading.text.clone());
+                    }
 
-                        let _ = match level {
-                            HeadingLevel::H1 => 1,
-                            HeadingLevel::H2 => 2,
-                            HeadingLevel::H3 => 3,
-                            HeadingLevel::H4 => 4,
-                            HeadingLevel::H5 => 5,
-                            HeadingLevel::H6 => 6,
-                        };
-                        ast.blocks.push(ContentBlock {
-                            id: generate_block_id(&current_text),
-                            block_type: BlockType::Heading,
-                            text: current_text.clone(),
-                            parent_heading: current_heading.clone(),
-                            position: block_position,
-                            links: Vec::new(),
-                        });
-                        block_position += current_text.len();
-                        current_text.clear();
-                    }
-                    TagEnd::Paragraph => {
-                        ast.blocks.push(ContentBlock {
-                            id: generate_block_id(&current_text),
-                            block_type: BlockType::Paragraph,
-                            text: current_text.clone(),
-                            parent_heading: current_heading.clone(),
-                            position: block_position,
-                            links: extract_links_from_text(&current_text),
-                        });
-                        block_position += current_text.len();
-                        current_text.clear();
-                    }
-                    _ => {}
+                    let _ = match level {
+                        HeadingLevel::H1 => 1,
+                        HeadingLevel::H2 => 2,
+                        HeadingLevel::H3 => 3,
+                        HeadingLevel::H4 => 4,
+                        HeadingLevel::H5 => 5,
+                        HeadingLevel::H6 => 6,
+                    };
+                    ast.blocks.push(ContentBlock {
+                        id: generate_block_id(&current_text),
+                        block_type: BlockType::Heading,
+                        text: current_text.clone(),
+                        parent_heading: current_heading.clone(),
+                        position: block_position,
+                        links: Vec::new(),
+                    });
+                    block_position += current_text.len();
+                    current_text.clear();
                 }
-            }
+                TagEnd::Paragraph => {
+                    ast.blocks.push(ContentBlock {
+                        id: generate_block_id(&current_text),
+                        block_type: BlockType::Paragraph,
+                        text: current_text.clone(),
+                        parent_heading: current_heading.clone(),
+                        position: block_position,
+                        links: extract_links_from_text(&current_text),
+                    });
+                    block_position += current_text.len();
+                    current_text.clear();
+                }
+                _ => {}
+            },
             Event::Text(text) => {
                 current_text.push_str(&text);
             }
@@ -146,7 +147,12 @@ pub fn parse_markdown(content: &str) -> MarkdownAst {
     }
 
     // Flush remaining text
-    flush_block(&mut ast, &mut current_text, &current_heading, block_position);
+    flush_block(
+        &mut ast,
+        &mut current_text,
+        &current_heading,
+        block_position,
+    );
 
     // Extract [[wikilinks]] from raw text
     ast.links = extract_wikilinks(content, "");
@@ -154,6 +160,7 @@ pub fn parse_markdown(content: &str) -> MarkdownAst {
     ast
 }
 
+#[allow(dead_code)]
 fn flush_block(
     ast: &mut MarkdownAst,
     text: &mut String,
@@ -186,18 +193,23 @@ pub fn generate_block_id(content: &str) -> String {
 }
 
 /// Strip block IDs from Markdown content for clean rendering
+#[allow(dead_code)]
 pub fn strip_block_ids(content: &str) -> String {
     let re = regex::Regex::new(r"<!-- \^[a-f0-9]{8} -->\n?").unwrap();
     re.replace_all(content, "").to_string()
 }
 
 /// Extract [[wikilinks]] from text content
+#[allow(dead_code)]
 pub fn extract_wikilinks(content: &str, source_file: &str) -> Vec<Wikilink> {
     let re = regex::Regex::new(r"\[\[([^\]|#]+)(?:[|#]([^\]]+))?\]\]").unwrap();
     let mut links = Vec::new();
 
     for cap in re.captures_iter(content) {
-        let target = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let target = cap
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
         let display = cap.get(2).map(|m| m.as_str().to_string());
         let position = cap.get(0).map(|m| m.start()).unwrap_or(0);
 
@@ -212,6 +224,7 @@ pub fn extract_wikilinks(content: &str, source_file: &str) -> Vec<Wikilink> {
     links
 }
 
+#[allow(dead_code)]
 fn extract_links_from_text(text: &str) -> Vec<String> {
     let re = regex::Regex::new(r"\[\[([^\]|#]+)").unwrap();
     re.captures_iter(text)

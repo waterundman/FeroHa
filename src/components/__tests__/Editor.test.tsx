@@ -10,10 +10,12 @@ vi.mock("codemirror", () => ({
       state: { doc: { toString: () => "" } },
       destroy: vi.fn(),
       dispatch: vi.fn(),
+      dom: document.createElement("div"),
     })),
     {
       updateListener: { of: vi.fn().mockReturnValue([]) },
       theme: vi.fn().mockReturnValue([]),
+      domEventHandlers: vi.fn().mockReturnValue([]),
     }
   ),
 }));
@@ -28,13 +30,34 @@ vi.mock("@codemirror/view", () => ({
       state: { doc: { toString: () => "" } },
       destroy: vi.fn(),
       dispatch: vi.fn(),
+      dom: document.createElement("div"),
     })),
     {
       updateListener: { of: vi.fn().mockReturnValue([]) },
       theme: vi.fn().mockReturnValue([]),
+      domEventHandlers: vi.fn().mockReturnValue([]),
     }
   ),
+  ViewPlugin: {
+    fromClass: vi.fn().mockReturnValue([]),
+  },
+  Decoration: {
+    mark: vi.fn().mockReturnValue({}),
+  },
+  DecorationSet: {} as any,
+  ViewUpdate: {} as any,
   keymap: { of: vi.fn().mockReturnValue([]) },
+}));
+
+vi.mock("@codemirror/state", () => ({
+  RangeSetBuilder: vi.fn().mockImplementation(() => ({
+    add: vi.fn(),
+    finish: vi.fn().mockReturnValue({}),
+  })),
+  Compartment: vi.fn().mockImplementation(() => ({
+    of: vi.fn().mockReturnValue([]),
+    reconfigure: vi.fn().mockReturnValue({}),
+  })),
 }));
 
 describe("Editor", () => {

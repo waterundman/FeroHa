@@ -1,0 +1,641 @@
+/* ── PipelineEditor v2 ── */
+.pipeline-editor-v2 {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--pipeline-canvas-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ── Toolbar ── */
+.pipeline-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pipeline-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pipeline-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+}
+
+.pipeline-toolbar-btn:hover {
+  background: var(--accent-secondary);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+.pipeline-toolbar-btn.danger-btn:hover {
+  background: var(--pipeline-node-error);
+  color: #fff;
+  border-color: var(--pipeline-node-error);
+}
+
+.pipeline-toolbar-btn.run-btn {
+  background: var(--accent-primary);
+  color: #000;
+  border-color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.pipeline-toolbar-btn.run-btn:hover {
+  background: var(--pipeline-node-done);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.pipeline-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pipeline-toolbar-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.pipeline-toolbar-name input {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 6px;
+  width: 180px;
+  outline: none;
+}
+
+.pipeline-toolbar-name input:hover,
+.pipeline-toolbar-name input:focus {
+  border-color: var(--border-color);
+  background: var(--bg-input);
+}
+
+.pipeline-run-status {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.pipeline-run-status.idle { color: var(--text-muted); }
+.pipeline-run-status.running { color: var(--pipeline-node-active); background: rgba(42,224,154,0.08); }
+.pipeline-run-status.completed { color: var(--pipeline-node-done); }
+.pipeline-run-status.failed { color: var(--pipeline-node-error); }
+
+.pipeline-progress-bar {
+  width: 80px;
+  height: 3px;
+  background: var(--border-color);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.pipeline-progress-bar-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* ── Editor Layout ── */
+.pipeline-editor-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Card Palette ── */
+.pipeline-card-palette {
+  width: 220px;
+  background: var(--pipeline-palette-bg);
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+  flex-shrink: 0;
+  padding: 8px 0;
+}
+
+.palette-category {
+  padding: 0 8px;
+  margin-bottom: 2px;
+}
+
+.palette-category-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.palette-category-header:hover {
+  background: var(--bg-hover);
+}
+
+.palette-category-header .chevron {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.palette-category-header .chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.palette-card-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin: 2px 0;
+  background: var(--bg-input);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: grab;
+  transition: all var(--transition-fast);
+  font-size: 12px;
+}
+
+.palette-card-item:hover {
+  background: var(--accent-secondary);
+  border-color: var(--accent-primary);
+}
+
+.palette-card-item:active {
+  cursor: grabbing;
+  opacity: 0.7;
+}
+
+.palette-card-item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--bg-primary);
+  flex-shrink: 0;
+}
+
+.palette-card-item-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Canvas ── */
+.pipeline-canvas-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.pipeline-canvas {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: auto;
+  background-color: var(--pipeline-canvas-bg);
+  background-image:
+    radial-gradient(circle, var(--pipeline-grid-color) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.pipeline-svg-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pipeline-svg-layer .edge-line {
+  stroke: var(--pipeline-edge-color);
+  stroke-width: 2;
+  fill: none;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.pipeline-svg-layer .edge-line:hover {
+  stroke: var(--accent-primary);
+  stroke-width: 3;
+}
+
+.pipeline-svg-layer .edge-line.selected {
+  stroke: var(--accent-primary);
+  stroke-width: 3;
+}
+
+.pipeline-svg-layer .edge-hit-area {
+  stroke: transparent;
+  stroke-width: 12;
+  fill: none;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.pipeline-svg-layer .port-circle {
+  fill: var(--pipeline-port-color);
+  stroke: var(--pipeline-node-border);
+  stroke-width: 1.5;
+  cursor: crosshair;
+  pointer-events: all;
+  transition: fill 0.15s;
+}
+
+.pipeline-svg-layer .port-circle:hover {
+  fill: var(--pipeline-port-hover);
+  stroke: var(--accent-primary);
+}
+
+.pipeline-svg-layer .temp-edge {
+  stroke: var(--accent-primary);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  fill: none;
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+/* ── Canvas Nodes ── */
+.pipeline-node {
+  position: absolute;
+  min-width: 150px;
+  max-width: 200px;
+  background: var(--pipeline-node-bg);
+  border: 2px solid var(--pipeline-node-border);
+  border-radius: 8px;
+  cursor: move;
+  z-index: 1;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.pipeline-node:hover {
+  border-color: var(--text-muted);
+  box-shadow: 0 0 12px rgba(0,0,0,0.3);
+}
+
+.pipeline-node.selected {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.pipeline-node.executing {
+  border-color: var(--pipeline-node-active);
+  animation: node-pulse 1.2s ease-in-out infinite;
+}
+
+.pipeline-node.completed {
+  border-color: var(--pipeline-node-done);
+}
+
+.pipeline-node.failed {
+  border-color: var(--pipeline-node-error);
+}
+
+.pipeline-node.node-start { border-color: var(--pipeline-node-done); }
+.pipeline-node.node-end { border-color: var(--pipeline-node-error); }
+.pipeline-node.node-condition { border-color: #d9a05b; }
+.pipeline-node.node-parallel { border-color: #9b7fd4; }
+
+@keyframes node-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(42,224,154,0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(42,224,154,0); }
+}
+
+.pipeline-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px 6px 0 0;
+  border-bottom: 1px solid var(--pipeline-node-border);
+}
+
+.pipeline-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pipeline-node-body {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  max-height: 40px;
+  overflow: hidden;
+}
+
+.pipeline-node-body p {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pipeline-node-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #fff;
+  z-index: 2;
+  background: var(--pipeline-node-done);
+  border: 2px solid var(--pipeline-canvas-bg);
+}
+
+.pipeline-node-badge.error {
+  background: var(--pipeline-node-error);
+}
+
+.pipeline-node-badge.running {
+  background: var(--pipeline-node-active);
+  animation: node-pulse 1.2s ease-in-out infinite;
+}
+
+/* ── Context Menu ── */
+.pipeline-context-menu {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 1000;
+}
+
+.pipeline-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  transition: all 0.1s;
+}
+
+.pipeline-context-menu-item:hover {
+  background: var(--accent-primary);
+  color: #000;
+}
+
+.pipeline-context-menu-item.danger:hover {
+  background: var(--pipeline-node-error);
+  color: #fff;
+}
+
+.pipeline-context-menu-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 3px 8px;
+}
+
+/* ── Properties Panel ── */
+.pipeline-properties-panel {
+  width: 260px;
+  background: var(--pipeline-palette-bg);
+  border-left: 1px solid var(--border-color);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.pipeline-properties-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pipeline-properties-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.pipeline-properties-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.pipeline-property-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.pipeline-property-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.pipeline-property-row {
+  margin-bottom: 8px;
+}
+
+.pipeline-property-row label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.pipeline-property-row input,
+.pipeline-property-row textarea,
+.pipeline-property-row select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.pipeline-property-row input:focus,
+.pipeline-property-row textarea:focus,
+.pipeline-property-row select:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.pipeline-edge-info {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.pipeline-edge-info span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Inline Param Editor ── */
+.pipeline-inline-editor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 500;
+}
+
+.pipeline-inline-editor {
+  position: absolute;
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 8px;
+  padding: 14px;
+  min-width: 280px;
+  max-width: 340px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 501;
+}
+
+.pipeline-inline-editor h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.pipeline-inline-editor-param {
+  margin-bottom: 10px;
+}
+
+.pipeline-inline-editor-param label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.pipeline-inline-editor-param input,
+.pipeline-inline-editor-param textarea,
+.pipeline-inline-editor-param select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.pipeline-inline-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.pipeline-inline-editor-actions button {
+  padding: 5px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.pipeline-inline-editor-actions .btn-primary {
+  background: var(--accent-primary);
+  color: #000;
+  border: none;
+  font-weight: 600;
+}
+
+.pipeline-inline-editor-actions .btn-cancel {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+/* ── Status Bar ── */
+.pipeline-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.pipeline-status-bar .status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pipeline-status-bar .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.pipeline-status-bar .status-dot.connected {
+  background: var(--pipeline-node-done);
+}

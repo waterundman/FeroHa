@@ -1,11 +1,12 @@
 // Plugin Manager — Install, enable/disable, auto-update plugins
 // Stage 6: Full implementation
+#![allow(dead_code)]
 
+use super::loader::{PluginInfo, PluginLoadError, PluginLoader};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use super::loader::{PluginLoader, PluginInfo, PluginLoadError};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PluginManagerConfig {
@@ -211,7 +212,10 @@ mod tests {
                 homepage: None,
                 min_app_version: None,
                 capabilities: Default::default(),
-                wasm: crate::plugin::loader::WasmConfig { entry: "p.wasm".to_string(), memory_pages: 128 },
+                wasm: crate::plugin::loader::WasmConfig {
+                    entry: "p.wasm".to_string(),
+                    memory_pages: 128,
+                },
                 dependencies: Default::default(),
             },
             enabled: false,
@@ -248,7 +252,10 @@ mod tests {
                 homepage: None,
                 min_app_version: None,
                 capabilities: Default::default(),
-                wasm: crate::plugin::loader::WasmConfig { entry: "p.wasm".to_string(), memory_pages: 128 },
+                wasm: crate::plugin::loader::WasmConfig {
+                    entry: "p.wasm".to_string(),
+                    memory_pages: 128,
+                },
                 dependencies: Default::default(),
             },
             enabled: false,

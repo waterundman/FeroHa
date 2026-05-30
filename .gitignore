@@ -26,3 +26,10 @@ test-vault/
 
 # Logs
 *.log
+
+# Bayesian history (development artifacts)
+.bayesian-history/
+
+# Development reports
+stage4-*.md
+开发仪表盘.md

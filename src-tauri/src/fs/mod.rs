@@ -1,4 +1,4 @@
-// File System module — Vault management, file watching
+// File System module — Vault management, file watching, commands
+pub mod commands;
 pub mod vault;
 pub mod watcher;
-pub mod sync;

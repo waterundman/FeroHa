@@ -2,9 +2,36 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Dual-Track Note IDE</title>
+    <style>
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 0.8; }
+      }
+      button:focus-visible {
+        outline: 2px solid #89b4fa;
+        outline-offset: 1px;
+      }
+      [role="tab"]:focus-visible {
+        outline: 2px solid #89b4fa;
+        outline-offset: -1px;
+      }
+      [role="tablist"]:focus-within [role="tab"][aria-selected="true"] {
+        box-shadow: inset 0 0 0 1px #89b4fa44;
+      }
+      a:focus-visible {
+        outline: 2px solid #89b4fa;
+        outline-offset: 2px;
+      }
+      *:focus:not(:focus-visible) {
+        outline: none;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -34,6 +34,15 @@ describe("useSettings", () => {
         language: "zh",
         theme: "mocha",
         editorFontSize: 14,
+        editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
+        defaultViewMode: "edit",
+        autoSaveInterval: 30,
+        llmProvider: "gemini",
+        llmApiKey: "",
+        llmModel: "gemini-pro",
+        embeddingProvider: "none",
+        embeddingApiKey: "",
+        ollamaBaseUrl: "http://localhost:11434",
       },
     });
   });
@@ -52,6 +61,15 @@ describe("useSettings", () => {
       language: "en" as const,
       theme: "macchiato" as const,
       editorFontSize: 16,
+      editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
+      defaultViewMode: "edit" as const,
+      autoSaveInterval: 30,
+      llmProvider: "openai" as const,
+      llmApiKey: "sk-test",
+      llmModel: "gpt-4",
+      embeddingProvider: "openai" as const,
+      embeddingApiKey: "sk-test",
+      ollamaBaseUrl: "http://localhost:11434",
     };
     localStorageMock.getItem.mockReturnValue(JSON.stringify(savedSettings));
 
@@ -109,6 +127,15 @@ describe("useSettings", () => {
       language: "zh",
       theme: "mocha",
       editorFontSize: 14,
+      editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
+      defaultViewMode: "edit",
+      autoSaveInterval: 30,
+      llmProvider: "gemini",
+      llmApiKey: "",
+      llmModel: "gemini-pro",
+      embeddingProvider: "none",
+      embeddingApiKey: "",
+      ollamaBaseUrl: "http://localhost:11434",
     });
   });
 });
