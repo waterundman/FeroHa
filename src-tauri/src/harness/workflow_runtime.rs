@@ -36,6 +36,7 @@ pub struct WorkflowRuntimeBundle {
     pub workflow: WorkflowIr,
     pub run: WorkflowRunState,
     pub registry: AgentRegistry,
+    #[serde(default)]
     pub dispatches: Vec<WorkflowDispatchRecord>,
     pub updated_at: String,
 }
@@ -314,6 +315,21 @@ mod tests {
                 .unwrap(),
             context
         );
+    }
+
+    #[test]
+    fn runtime_bundle_defaults_missing_dispatches_to_empty() {
+        let mut encoded =
+            serde_json::to_value(bundle("run-legacy", "2026-06-22T00:01:00Z")).unwrap();
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("dispatches")
+            .unwrap();
+
+        let decoded: WorkflowRuntimeBundle = serde_json::from_value(encoded).unwrap();
+
+        assert!(decoded.dispatches.is_empty());
     }
 
     #[test]
