@@ -1487,7 +1487,8 @@ fn is_delegation_tool(tool: &str) -> bool {
 
 pub(crate) fn safe_runtime_component(value: &str) -> Result<&str, WorkflowError> {
     let trimmed = value.trim();
-    if trimmed.is_empty()
+    if trimmed != value
+        || trimmed.is_empty()
         || trimmed == "."
         || trimmed == ".."
         || trimmed.contains("..")
@@ -1495,7 +1496,7 @@ pub(crate) fn safe_runtime_component(value: &str) -> Result<&str, WorkflowError>
         || trimmed.contains('\\')
         || !trimmed
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
     {
         return Err(WorkflowError::UnsafeRuntimeComponent(value.to_string()));
     }
@@ -2196,5 +2197,29 @@ mod tests {
             WorkflowRuntimeEventStore::append_chain(temp.path(), &chain).unwrap_err(),
             WorkflowError::UnsafeRuntimeComponent("../escape".to_string())
         );
+    }
+
+    #[test]
+    fn runtime_event_store_rejects_padded_run_ids() {
+        let temp = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            WorkflowRuntimeEventStore::event_log_path(temp.path(), " run_demo "),
+            Err(WorkflowError::UnsafeRuntimeComponent(
+                " run_demo ".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn runtime_event_store_rejects_dotted_run_ids() {
+        let temp = tempfile::tempdir().unwrap();
+
+        for run_id in ["run.demo", "run_demo.", ".run_demo"] {
+            assert_eq!(
+                WorkflowRuntimeEventStore::event_log_path(temp.path(), run_id),
+                Err(WorkflowError::UnsafeRuntimeComponent(run_id.to_string()))
+            );
+        }
     }
 }

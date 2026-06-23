@@ -68,6 +68,21 @@ impl WorkflowRuntimeStore {
     }
 
     pub fn write(&self, bundle: &WorkflowRuntimeBundle) -> Result<PathBuf, WorkflowError> {
+        self.write_with_persist(bundle, |temp, path| {
+            temp.persist(path)
+                .map(|_| ())
+                .map_err(|err| format!("persist {}: {}", path.display(), err.error))
+        })
+    }
+
+    fn write_with_persist<F>(
+        &self,
+        bundle: &WorkflowRuntimeBundle,
+        persist: F,
+    ) -> Result<PathBuf, WorkflowError>
+    where
+        F: FnOnce(NamedTempFile, &Path) -> Result<(), String>,
+    {
         let path = self.runtime_path(&bundle.run.run_id)?;
         validate_bundle_contract(bundle)?;
         let encoded = serde_json::to_vec_pretty(bundle)
@@ -97,9 +112,7 @@ impl WorkflowRuntimeStore {
         temp.as_file().sync_all().map_err(|err| {
             WorkflowError::RuntimeStateIo(format!("sync {}: {err}", path.display()))
         })?;
-        temp.persist(&path).map_err(|err| {
-            WorkflowError::RuntimeStateIo(format!("persist {}: {err}", path.display()))
-        })?;
+        persist(temp, &path).map_err(WorkflowError::RuntimeStateIo)?;
 
         Ok(path)
     }
@@ -109,10 +122,7 @@ impl WorkflowRuntimeStore {
         let encoded = match fs::read(&path) {
             Ok(encoded) => encoded,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(WorkflowError::RuntimeStateMissing(format!(
-                    "run {run_id} has no runtime state at {}",
-                    path.display()
-                )))
+                return Err(WorkflowError::RuntimeStateMissing(run_id.to_string()))
             }
             Err(err) => {
                 return Err(WorkflowError::RuntimeStateIo(format!(
@@ -198,6 +208,7 @@ fn validate_bundle_contract(bundle: &WorkflowRuntimeBundle) -> Result<(), Workfl
             workflow_version: bundle.workflow.version,
         });
     }
+    bundle.workflow.validate(&bundle.goal, &bundle.registry)?;
     Ok(())
 }
 
@@ -247,7 +258,7 @@ mod tests {
                 dependencies: vec![],
                 acceptance_criteria: vec!["runtime.json can be read back".to_string()],
                 goal_alignment: GoalAlignment {
-                    success_clauses: vec![0],
+                    success_clauses: vec![1],
                     why_necessary: "Durable state is the goal".to_string(),
                 },
                 retry_policy: RetryPolicy {
@@ -371,6 +382,20 @@ mod tests {
     }
 
     #[test]
+    fn runtime_store_rejects_padded_run_id_before_writing() {
+        let vault = tempfile::tempdir().unwrap();
+        let store = WorkflowRuntimeStore::new(vault.path());
+
+        assert_eq!(
+            store.write(&bundle(" run-padded ", "2026-06-22T00:01:00Z")),
+            Err(WorkflowError::UnsafeRuntimeComponent(
+                " run-padded ".to_string()
+            ))
+        );
+        assert!(!vault.path().join(".harness/runs/run-padded").exists());
+    }
+
+    #[test]
     fn runtime_store_rejects_run_workflow_mismatch_before_writing() {
         let vault = tempfile::tempdir().unwrap();
         let store = WorkflowRuntimeStore::new(vault.path());
@@ -387,6 +412,23 @@ mod tests {
             })
         );
         assert!(!store.runtime_path("run-mismatch").unwrap().exists());
+    }
+
+    #[test]
+    fn runtime_store_rejects_invalid_workflow_before_writing() {
+        let vault = tempfile::tempdir().unwrap();
+        let store = WorkflowRuntimeStore::new(vault.path());
+        let mut invalid = bundle("run-invalid", "2026-06-22T00:01:00Z");
+        invalid.workflow.steps[0].goal_alignment.success_clauses = vec![2];
+
+        assert_eq!(
+            store.write(&invalid),
+            Err(WorkflowError::GoalClauseOutOfRange {
+                step_id: "S001".to_string(),
+                clause: 2,
+            })
+        );
+        assert!(!store.runtime_path("run-invalid").unwrap().exists());
     }
 
     #[test]
@@ -410,11 +452,12 @@ mod tests {
         let vault = tempfile::tempdir().unwrap();
         let store = WorkflowRuntimeStore::new(vault.path());
 
-        assert!(matches!(
+        assert_eq!(
             store.read("missing-run"),
-            Err(WorkflowError::RuntimeStateMissing(message))
-                if message.contains("missing-run")
-        ));
+            Err(WorkflowError::RuntimeStateMissing(
+                "missing-run".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -429,5 +472,30 @@ mod tests {
         store.write(&replacement).unwrap();
 
         assert_eq!(store.read("run-replace").unwrap(), replacement);
+    }
+
+    #[test]
+    fn runtime_store_keeps_existing_bundle_when_replacement_persist_fails() {
+        let vault = tempfile::tempdir().unwrap();
+        let store = WorkflowRuntimeStore::new(vault.path());
+        let original = bundle("run-replace-fail", "2026-06-22T00:01:00Z");
+        store.write(&original).unwrap();
+        let replacement = bundle("run-replace-fail", "2026-06-22T00:02:00Z");
+
+        let error = store
+            .write_with_persist(&replacement, |_temp, path| {
+                Err(format!(
+                    "forced persist failure for {}",
+                    path.display()
+                ))
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::RuntimeStateIo(message)
+                if message.contains("forced persist failure")
+        ));
+        assert_eq!(store.read("run-replace-fail").unwrap(), original);
     }
 }
