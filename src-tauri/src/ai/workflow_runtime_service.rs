@@ -1,9 +1,9 @@
-use super::agent_scheduler::AgentScheduler;
+use super::agent_scheduler::{AgentScheduler, TaskStatus};
 use super::workflow_task_adapter::{AdaptedWorkflowTask, WorkflowTaskAdapter};
 use crate::harness::workflow::{
     safe_runtime_component, AgentRegistry, ArtifactContract, GoalContract, OrchestratorOutput,
-    StepDispatch, WorkflowError, WorkflowIr, WorkflowRunState, WorkflowRuntimeEventChain,
-    WorkflowRuntimeEventStore, WorkflowStep,
+    RunStatus, StepDispatch, WorkflowError, WorkflowIr, WorkflowRunState,
+    WorkflowRuntimeEventChain, WorkflowRuntimeEventStore, WorkflowStep, WorkflowStepStatus,
 };
 use crate::harness::workflow_runtime::{
     WorkflowDispatchRecord, WorkflowDispatchStatus, WorkflowRuntimeBundle, WorkflowRuntimeStore,
@@ -119,6 +119,7 @@ impl WorkflowRuntimeService {
         scheduler: &mut AgentScheduler,
         now: u64,
     ) -> Result<WorkflowRuntimeBundle, WorkflowError> {
+        self.sync_scheduler_statuses(bundle, scheduler, now)?;
         self.recover_missing_scheduler_tasks(bundle, scheduler, now)?;
 
         for dispatch in bundle
@@ -183,6 +184,175 @@ impl WorkflowRuntimeService {
         Ok(())
     }
 
+    fn sync_scheduler_statuses(
+        &self,
+        bundle: &mut WorkflowRuntimeBundle,
+        scheduler: &AgentScheduler,
+        now: u64,
+    ) -> Result<(), WorkflowError> {
+        let task_statuses = bundle
+            .dispatches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| {
+                let task_id = record.task_id.as_ref()?;
+                let task = scheduler.get_task(task_id)?;
+                Some((index, task_id.clone(), task.status.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        for (index, task_id, status) in task_statuses {
+            self.sync_task_status(bundle, index, &task_id, &status, now)?;
+        }
+
+        Ok(())
+    }
+
+    fn sync_task_status(
+        &self,
+        bundle: &mut WorkflowRuntimeBundle,
+        record_index: usize,
+        task_id: &str,
+        status: &TaskStatus,
+        now: u64,
+    ) -> Result<(), WorkflowError> {
+        let (step_id, attempt) = {
+            let record = &bundle.dispatches[record_index];
+            (record.step_id.clone(), record.attempt)
+        };
+        let dispatch = self.dispatch_for_step(bundle, &step_id, attempt)?;
+        let mut changed = false;
+
+        match status {
+            TaskStatus::Pending | TaskStatus::Approved { .. } | TaskStatus::Queued => {
+                changed |= set_dispatch_state(
+                    &mut bundle.dispatches[record_index],
+                    WorkflowDispatchStatus::Queued,
+                    Some("submitted and approved by orchestrator".to_string()),
+                );
+                changed |= set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &step_id,
+                    WorkflowStepStatus::Running,
+                )?;
+                changed |= add_active_step(&mut bundle.run.active_step_ids, &step_id);
+                if changed {
+                    bundle.updated_at = now.to_string();
+                    self.store.write(bundle)?;
+                }
+                self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
+                    &dispatch,
+                    task_id,
+                    now.to_string(),
+                ))?;
+            }
+            TaskStatus::Running { .. } => {
+                changed |= set_dispatch_state(
+                    &mut bundle.dispatches[record_index],
+                    WorkflowDispatchStatus::Running,
+                    Some("scheduler task is running".to_string()),
+                );
+                changed |= set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &step_id,
+                    WorkflowStepStatus::Running,
+                )?;
+                changed |= add_active_step(&mut bundle.run.active_step_ids, &step_id);
+                if changed {
+                    bundle.updated_at = now.to_string();
+                    self.store.write(bundle)?;
+                }
+                self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_running(
+                    &dispatch,
+                    task_id,
+                    now.to_string(),
+                ))?;
+            }
+            TaskStatus::Done { result, .. } => {
+                changed |= set_dispatch_state(
+                    &mut bundle.dispatches[record_index],
+                    WorkflowDispatchStatus::Reported,
+                    Some(result.clone()),
+                );
+                changed |= set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &step_id,
+                    WorkflowStepStatus::Reported,
+                )?;
+                changed |= remove_active_step(&mut bundle.run.active_step_ids, &step_id);
+                if changed {
+                    bundle.updated_at = now.to_string();
+                    self.store.write(bundle)?;
+                }
+                self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_reported(
+                    &dispatch,
+                    task_id,
+                    result.clone(),
+                    now.to_string(),
+                ))?;
+            }
+            TaskStatus::Error { message } => {
+                changed |= set_dispatch_state(
+                    &mut bundle.dispatches[record_index],
+                    WorkflowDispatchStatus::Failed,
+                    Some(message.clone()),
+                );
+                changed |= set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &step_id,
+                    WorkflowStepStatus::Failed,
+                )?;
+                changed |= remove_active_step(&mut bundle.run.active_step_ids, &step_id);
+                if !matches!(bundle.run.status, RunStatus::Failed) {
+                    bundle.run.status = RunStatus::Failed;
+                    changed = true;
+                }
+                if changed {
+                    bundle.updated_at = now.to_string();
+                    self.store.write(bundle)?;
+                }
+                self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_failed(
+                    &dispatch,
+                    task_id,
+                    "task_failed",
+                    message.clone(),
+                    now.to_string(),
+                ))?;
+            }
+            TaskStatus::Cancelled => {
+                let message = "scheduler task was cancelled".to_string();
+                changed |= set_dispatch_state(
+                    &mut bundle.dispatches[record_index],
+                    WorkflowDispatchStatus::Failed,
+                    Some(message.clone()),
+                );
+                changed |= set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &step_id,
+                    WorkflowStepStatus::Failed,
+                )?;
+                changed |= remove_active_step(&mut bundle.run.active_step_ids, &step_id);
+                if !matches!(bundle.run.status, RunStatus::Failed) {
+                    bundle.run.status = RunStatus::Failed;
+                    changed = true;
+                }
+                if changed {
+                    bundle.updated_at = now.to_string();
+                    self.store.write(bundle)?;
+                }
+                self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_failed(
+                    &dispatch,
+                    task_id,
+                    "task_cancelled",
+                    message,
+                    now.to_string(),
+                ))?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn advance_dispatch(
         &self,
         bundle: &mut WorkflowRuntimeBundle,
@@ -200,6 +370,11 @@ impl WorkflowRuntimeService {
                         .map_err(WorkflowError::RuntimeStateIo)?;
                 }
                 mark_dispatch_queued(bundle, dispatch, &task_id, now);
+                set_workflow_step_status(
+                    &mut bundle.workflow,
+                    &dispatch.step_id,
+                    WorkflowStepStatus::Running,
+                )?;
                 add_active_step(&mut bundle.run.active_step_ids, &dispatch.step_id);
                 self.store.write(bundle)?;
                 self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
@@ -292,14 +467,57 @@ impl WorkflowRuntimeService {
                 bundle.updated_at.clone(),
             ))?;
             match record.status {
-                WorkflowDispatchStatus::Queued
-                | WorkflowDispatchStatus::Running
-                | WorkflowDispatchStatus::Reported
-                | WorkflowDispatchStatus::Failed => {
+                WorkflowDispatchStatus::Queued => {
                     if let Some(task_id) = record.task_id.as_deref() {
                         self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
                             &dispatch,
                             task_id,
+                            bundle.updated_at.clone(),
+                        ))?;
+                    }
+                }
+                WorkflowDispatchStatus::Running => {
+                    if let Some(task_id) = record.task_id.as_deref() {
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
+                            &dispatch,
+                            task_id,
+                            bundle.updated_at.clone(),
+                        ))?;
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_running(
+                            &dispatch,
+                            task_id,
+                            bundle.updated_at.clone(),
+                        ))?;
+                    }
+                }
+                WorkflowDispatchStatus::Reported => {
+                    if let Some(task_id) = record.task_id.as_deref() {
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
+                            &dispatch,
+                            task_id,
+                            bundle.updated_at.clone(),
+                        ))?;
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_reported(
+                            &dispatch,
+                            task_id,
+                            record.detail.clone().unwrap_or_default(),
+                            bundle.updated_at.clone(),
+                        ))?;
+                    }
+                }
+                WorkflowDispatchStatus::Failed => {
+                    if let Some(task_id) = record.task_id.as_deref() {
+                        let (reason_code, summary) = failed_dispatch_detail(record);
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_queued(
+                            &dispatch,
+                            task_id,
+                            bundle.updated_at.clone(),
+                        ))?;
+                        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_failed(
+                            &dispatch,
+                            task_id,
+                            reason_code,
+                            summary,
                             bundle.updated_at.clone(),
                         ))?;
                     }
@@ -363,6 +581,15 @@ fn unsupported_dispatch_detail(record: &WorkflowDispatchRecord) -> (String, Stri
             "unsupported_workflow_capability".to_string(),
             detail.to_string(),
         )
+    }
+}
+
+fn failed_dispatch_detail(record: &WorkflowDispatchRecord) -> (String, String) {
+    let summary = record.detail.clone().unwrap_or_default();
+    if summary == "scheduler task was cancelled" {
+        ("task_cancelled".to_string(), summary)
+    } else {
+        ("task_failed".to_string(), summary)
     }
 }
 
@@ -482,10 +709,54 @@ fn mark_dispatch_unsupported(
     bundle.updated_at = now.to_string();
 }
 
-fn add_active_step(active_step_ids: &mut Vec<String>, step_id: &str) {
+fn set_dispatch_state(
+    record: &mut WorkflowDispatchRecord,
+    status: WorkflowDispatchStatus,
+    detail: Option<String>,
+) -> bool {
+    let changed = record.status != status || record.detail != detail;
+    if changed {
+        record.status = status;
+        record.detail = detail;
+    }
+    changed
+}
+
+fn set_workflow_step_status(
+    workflow: &mut WorkflowIr,
+    step_id: &str,
+    status: WorkflowStepStatus,
+) -> Result<bool, WorkflowError> {
+    let step = workflow
+        .steps
+        .iter_mut()
+        .find(|step| step.step_id == step_id)
+        .ok_or_else(|| {
+            WorkflowError::RuntimeStateParse(format!(
+                "dispatch record references missing step {step_id}"
+            ))
+        })?;
+    if step.status == status {
+        Ok(false)
+    } else {
+        step.status = status;
+        Ok(true)
+    }
+}
+
+fn add_active_step(active_step_ids: &mut Vec<String>, step_id: &str) -> bool {
     if !active_step_ids.iter().any(|active| active == step_id) {
         active_step_ids.push(step_id.to_string());
+        true
+    } else {
+        false
     }
+}
+
+fn remove_active_step(active_step_ids: &mut Vec<String>, step_id: &str) -> bool {
+    let original_len = active_step_ids.len();
+    active_step_ids.retain(|active| active != step_id);
+    active_step_ids.len() != original_len
 }
 
 #[cfg(test)]
@@ -759,6 +1030,96 @@ mod tests {
         );
         assert_eq!(bundle.dispatches[0].status, WorkflowDispatchStatus::Queued);
         assert_eq!(bundle.run.active_step_ids, vec!["S001".to_string()]);
+    }
+
+    #[test]
+    fn resume_syncs_running_and_reported_scheduler_task() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkflowRuntimeService::new(root.path());
+        let mut scheduler = AgentScheduler::new(2);
+        service
+            .start(
+                goal(),
+                workflow_with_ready_research(),
+                registry(),
+                "run_demo",
+                &mut scheduler,
+                100,
+            )
+            .unwrap();
+        let task = scheduler.dequeue().unwrap();
+
+        let running = service.resume("run_demo", &mut scheduler, 101).unwrap();
+
+        assert_eq!(
+            running.dispatches[0].status,
+            WorkflowDispatchStatus::Running
+        );
+        assert_eq!(
+            running.workflow.steps[0].status,
+            WorkflowStepStatus::Running
+        );
+        assert_eq!(running.run.active_step_ids, vec!["S001".to_string()]);
+        scheduler.complete(&task.id, "research report body".to_string());
+
+        let reported = service.resume("run_demo", &mut scheduler, 102).unwrap();
+
+        assert_eq!(
+            reported.dispatches[0].status,
+            WorkflowDispatchStatus::Reported
+        );
+        assert_eq!(
+            reported.dispatches[0].detail.as_deref(),
+            Some("research report body")
+        );
+        assert_eq!(
+            reported.workflow.steps[0].status,
+            WorkflowStepStatus::Reported
+        );
+        assert!(reported.run.active_step_ids.is_empty());
+        let events = runtime_events(root.path(), "run_demo");
+        assert!(events
+            .iter()
+            .any(|event| event.event_name == "workflow.step.running"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_name == "workflow.step.reported"));
+    }
+
+    #[test]
+    fn resume_syncs_failed_scheduler_task() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkflowRuntimeService::new(root.path());
+        let mut scheduler = AgentScheduler::new(2);
+        service
+            .start(
+                goal(),
+                workflow_with_ready_research(),
+                registry(),
+                "run_demo",
+                &mut scheduler,
+                100,
+            )
+            .unwrap();
+        let task = scheduler.dequeue().unwrap();
+        scheduler.fail(&task.id, "retrieval failed".to_string());
+
+        let failed = service.resume("run_demo", &mut scheduler, 101).unwrap();
+
+        assert_eq!(failed.dispatches[0].status, WorkflowDispatchStatus::Failed);
+        assert_eq!(
+            failed.dispatches[0].detail.as_deref(),
+            Some("retrieval failed")
+        );
+        assert_eq!(failed.workflow.steps[0].status, WorkflowStepStatus::Failed);
+        assert!(matches!(failed.run.status, RunStatus::Failed));
+        assert!(failed.run.active_step_ids.is_empty());
+        let events = runtime_events(root.path(), "run_demo");
+        let failed_event = events
+            .iter()
+            .find(|event| event.event_name == "workflow.step.failed")
+            .unwrap();
+        assert_eq!(failed_event.attributes["reason_code"], "task_failed");
     }
 
     #[test]

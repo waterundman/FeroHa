@@ -992,6 +992,86 @@ impl WorkflowRuntimeEventChain {
         }
     }
 
+    pub fn from_step_running(
+        dispatch: &StepDispatch,
+        task_id: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.into();
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.step.running",
+                format!(
+                    "Workflow step {} is running as task {}.",
+                    dispatch.step_id, task_id
+                ),
+                step_event_attributes(dispatch, Some(task_id.as_str()), None),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_reported(
+        dispatch: &StepDispatch,
+        task_id: impl Into<String>,
+        summary: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.into();
+        let summary = summary.into();
+        let mut attributes = step_event_attributes(dispatch, Some(task_id.as_str()), None);
+        if let Value::Object(map) = &mut attributes {
+            map.insert("summary".to_string(), serde_json::json!(summary));
+        }
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.step.reported",
+                format!(
+                    "Workflow step {} reported from task {}.",
+                    dispatch.step_id, task_id
+                ),
+                attributes,
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_failed(
+        dispatch: &StepDispatch,
+        task_id: impl Into<String>,
+        reason_code: impl Into<String>,
+        summary: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.into();
+        let reason_code = reason_code.into();
+        let summary = summary.into();
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "ERROR",
+                "workflow.step.failed",
+                summary.clone(),
+                step_event_attributes(
+                    dispatch,
+                    Some(task_id.as_str()),
+                    Some((reason_code.as_str(), summary.as_str())),
+                ),
+            )],
+            replan_requested: false,
+        }
+    }
+
     pub fn from_step_unsupported(
         dispatch: &StepDispatch,
         reason_code: impl Into<String>,
