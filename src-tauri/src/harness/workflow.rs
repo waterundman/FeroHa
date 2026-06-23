@@ -871,10 +871,71 @@ impl OrchestratorReplanRequest {
 }
 
 impl WorkflowRuntimeEventChain {
-    pub fn from_step_dispatches(
-        dispatches: &[StepDispatch],
+    pub fn from_run_created(
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
         timestamp: impl Into<String>,
     ) -> Self {
+        let workflow_id = workflow.workflow_id.clone();
+        let run_id = run.run_id.clone();
+        Self {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.run.created",
+                format!(
+                    "Workflow run {} created for {}@v{}.",
+                    run_id, workflow_id, workflow.version
+                ),
+                serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "workflow_version": workflow.version,
+                    "workflow_status": workflow.status,
+                    "run_status": run.status,
+                    "active_step_ids": run.active_step_ids,
+                    "context_digest_version": run.context_digest_version,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_run_resumed(
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let workflow_id = workflow.workflow_id.clone();
+        let run_id = run.run_id.clone();
+        Self {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.run.resumed",
+                format!(
+                    "Workflow run {} resumed for {}@v{}.",
+                    run_id, workflow_id, workflow.version
+                ),
+                serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "workflow_version": workflow.version,
+                    "workflow_status": workflow.status,
+                    "run_status": run.status,
+                    "active_step_ids": run.active_step_ids,
+                    "context_digest_version": run.context_digest_version,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_dispatches(dispatches: &[StepDispatch], timestamp: impl Into<String>) -> Self {
         let timestamp = timestamp.into();
         let workflow_id = dispatches
             .first()
@@ -895,18 +956,7 @@ impl WorkflowRuntimeEventChain {
                         "Workflow step {} dispatched to {}.",
                         dispatch.step_id, dispatch.agent_type
                     ),
-                    serde_json::json!({
-                        "workflow_id": dispatch.workflow_id,
-                        "run_id": dispatch.run_id,
-                        "step_id": dispatch.step_id,
-                        "agent_type": dispatch.agent_type,
-                        "capability": dispatch.capability,
-                        "mode": dispatch.mode,
-                        "attempt": dispatch.attempt,
-                        "inputs": dispatch.inputs,
-                        "artifact_contract": dispatch.artifact_contract,
-                        "sandbox_summary": dispatch.sandbox_policy.summary(),
-                    }),
+                    step_event_attributes(dispatch, None, None),
                 )
             })
             .collect();
@@ -915,6 +965,55 @@ impl WorkflowRuntimeEventChain {
             workflow_id,
             run_id,
             events,
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_queued(
+        dispatch: &StepDispatch,
+        task_id: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.into();
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.step.queued",
+                format!(
+                    "Workflow step {} queued as task {}.",
+                    dispatch.step_id, task_id
+                ),
+                step_event_attributes(dispatch, Some(task_id.as_str()), None),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_unsupported(
+        dispatch: &StepDispatch,
+        reason_code: impl Into<String>,
+        summary: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let reason_code = reason_code.into();
+        let summary = summary.into();
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "WARN",
+                "workflow.step.unsupported",
+                summary.clone(),
+                step_event_attributes(
+                    dispatch,
+                    None,
+                    Some((reason_code.as_str(), summary.as_str())),
+                ),
+            )],
             replan_requested: false,
         }
     }
@@ -1106,6 +1205,37 @@ impl WorkflowRuntimeEventChain {
             replan_requested: false,
         }
     }
+}
+
+fn step_event_attributes(
+    dispatch: &StepDispatch,
+    task_id: Option<&str>,
+    error: Option<(&str, &str)>,
+) -> Value {
+    let mut attributes = serde_json::json!({
+        "workflow_id": dispatch.workflow_id,
+        "run_id": dispatch.run_id,
+        "step_id": dispatch.step_id,
+        "agent_type": dispatch.agent_type,
+        "capability": dispatch.capability,
+        "mode": dispatch.mode,
+        "attempt": dispatch.attempt,
+        "inputs": dispatch.inputs,
+        "artifact_contract": dispatch.artifact_contract,
+        "sandbox_summary": dispatch.sandbox_policy.summary(),
+    });
+
+    if let Value::Object(map) = &mut attributes {
+        if let Some(task_id) = task_id {
+            map.insert("task_id".to_string(), serde_json::json!(task_id));
+        }
+        if let Some((reason_code, summary)) = error {
+            map.insert("reason_code".to_string(), serde_json::json!(reason_code));
+            map.insert("summary".to_string(), serde_json::json!(summary));
+        }
+    }
+
+    attributes
 }
 
 impl WorkflowRuntimeEventStore {
@@ -1887,7 +2017,10 @@ mod tests {
         assert_eq!(writer.workflow_id, "wf_goal_demo");
         assert_eq!(writer.run_id, "run_demo");
         assert_eq!(writer.capability, WorkflowStepKind::Implement);
-        assert_eq!(writer.inputs, json!({"files": ["src-tauri/src/harness/**"]}));
+        assert_eq!(
+            writer.inputs,
+            json!({"files": ["src-tauri/src/harness/**"]})
+        );
         assert_eq!(
             writer.artifact_contract.expected_output,
             "Produce a patch-shaped result, not a direct global decision."
@@ -1912,13 +2045,14 @@ mod tests {
         assert!(researcher.sandbox_policy.allows_tool("Read"));
         assert!(!researcher.sandbox_policy.allows_tool("Write"));
 
-        let event_chain = WorkflowRuntimeEventChain::from_step_dispatches(
-            &dispatches,
-            "2026-06-03T00:04:01Z",
-        );
+        let event_chain =
+            WorkflowRuntimeEventChain::from_step_dispatches(&dispatches, "2026-06-03T00:04:01Z");
         assert_eq!(event_chain.events.len(), 2);
         assert_eq!(event_chain.events[0].event_name, "workflow.step.dispatched");
-        assert_eq!(event_chain.events[0].attributes["workflow_id"], "wf_goal_demo");
+        assert_eq!(
+            event_chain.events[0].attributes["workflow_id"],
+            "wf_goal_demo"
+        );
         assert_eq!(event_chain.events[0].attributes["run_id"], "run_demo");
         assert_eq!(event_chain.events[0].attributes["step_id"], "S002");
         assert_eq!(event_chain.events[0].attributes["capability"], "implement");

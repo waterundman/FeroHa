@@ -17,4 +17,5 @@ pub mod task_intent;
 pub mod task_scheduler;
 pub mod tool_registry;
 pub mod vectordb;
+pub mod workflow_runtime_service;
 pub mod workflow_task_adapter;
