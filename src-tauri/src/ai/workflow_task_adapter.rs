@@ -2,7 +2,9 @@ use super::agent_scheduler::{AgentTask, SynthesizePhase, TaskPriority, TaskStatu
 use super::task_intent::TaskIntentType;
 use crate::cli::parser::CliCommand;
 use crate::harness::context::{ContextFragment, ContextLayer, ContextSource};
-use crate::harness::workflow::{StepDispatch, WorkflowError, WorkflowStepKind};
+use crate::harness::workflow::{
+    safe_runtime_component, StepDispatch, WorkflowError, WorkflowStepKind,
+};
 use crate::harness::workflow_runtime::WorkflowTaskContext;
 
 const WORKFLOW_DISPATCH_CONTEXT_KEY: &str = "workflow.dispatch";
@@ -20,11 +22,13 @@ pub enum AdaptedWorkflowTask {
 pub struct WorkflowTaskAdapter;
 
 impl WorkflowTaskAdapter {
-    pub fn task_id(dispatch: &StepDispatch) -> String {
-        format!(
+    pub fn task_id(dispatch: &StepDispatch) -> Result<String, WorkflowError> {
+        let run_id = safe_runtime_component(&dispatch.run_id)?;
+        let step_id = safe_runtime_component(&dispatch.step_id)?;
+        Ok(format!(
             "workflow__{}__{}__attempt_{}",
-            dispatch.run_id, dispatch.step_id, dispatch.attempt
-        )
+            run_id, step_id, dispatch.attempt
+        ))
     }
 
     pub fn adapt(
@@ -46,7 +50,7 @@ impl WorkflowTaskAdapter {
 }
 
 fn research_task(dispatch: &StepDispatch, created_at: u64) -> Result<AgentTask, WorkflowError> {
-    let task_id = WorkflowTaskAdapter::task_id(dispatch);
+    let task_id = WorkflowTaskAdapter::task_id(dispatch)?;
     let question = research_question(dispatch);
     let command_max_iterations = dispatch_max_iterations(dispatch);
     let max_iterations = command_max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
@@ -217,9 +221,51 @@ mod tests {
         };
 
         assert_eq!(task.id, "workflow__run_demo__S001__attempt_1");
-        assert!(matches!(task.command, CliCommand::DeepResearch { .. }));
+        assert!(matches!(
+            task.command,
+            CliCommand::DeepResearch {
+                ref question,
+                max_iterations: None
+            } if question == "What evidence supports the claim?"
+        ));
+        assert!(matches!(task.task_type, TaskType::DeepDive));
+        assert_eq!(task.task_intent, Some(TaskIntentType::Research));
         assert_eq!(task.sandbox_policy, Some(dispatch.sandbox_policy.clone()));
-        assert_eq!(workflow_task_context(&task).unwrap().run_id, "run_demo");
+        assert!(matches!(task.priority, TaskPriority::Low));
+        assert_eq!(task.priority_score, 0);
+        assert!(matches!(task.status, TaskStatus::Pending));
+        assert_eq!(task.created_at, 100);
+        assert_eq!(
+            task.prompt.as_deref(),
+            Some("What evidence supports the claim?")
+        );
+        assert_eq!(task.content, "What evidence supports the claim?");
+        assert_eq!(task.max_iterations, DEFAULT_MAX_ITERATIONS);
+
+        let context = workflow_task_context(&task).unwrap();
+        assert_eq!(context.workflow_id, "wf_demo");
+        assert_eq!(context.run_id, "run_demo");
+        assert_eq!(context.step_id, "S001");
+        assert_eq!(context.attempt, 1);
+        assert_eq!(
+            context.acceptance_criteria,
+            vec!["Every claim has a source".to_string()]
+        );
+
+        let fragment = task
+            .context_fragments
+            .iter()
+            .find(|fragment| fragment.key == WORKFLOW_DISPATCH_CONTEXT_KEY)
+            .unwrap();
+        assert_eq!(fragment.source, ContextSource::Pipeline);
+        assert_eq!(fragment.layer, ContextLayer::Project);
+        assert_eq!(fragment.created_at, 100);
+        assert_eq!(fragment.ttl, None);
+        assert_eq!(fragment.value, serde_json::to_value(&context).unwrap());
+        assert_eq!(
+            fragment.hash,
+            ContextFragment::compute_hash(WORKFLOW_DISPATCH_CONTEXT_KEY, &fragment.value)
+        );
     }
 
     #[test]
@@ -238,5 +284,20 @@ mod tests {
         assert_eq!(capability, WorkflowStepKind::Implement);
         assert_eq!(reason_code, "unsupported_workflow_capability");
         assert_eq!(summary, "No narrow-loop executor for Implement".to_string());
+    }
+
+    #[test]
+    fn research_dispatch_rejects_unsafe_task_id_components() {
+        let unsafe_step = research_dispatch("run_demo", "../escape");
+        assert!(matches!(
+            WorkflowTaskAdapter::adapt(&unsafe_step, 100),
+            Err(WorkflowError::UnsafeRuntimeComponent(value)) if value == "../escape"
+        ));
+
+        let unsafe_run = research_dispatch("run.demo", "S001");
+        assert!(matches!(
+            WorkflowTaskAdapter::adapt(&unsafe_run, 100),
+            Err(WorkflowError::UnsafeRuntimeComponent(value)) if value == "run.demo"
+        ));
     }
 }
