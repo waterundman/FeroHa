@@ -1,7 +1,12 @@
 // Test: useSettings hook
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useSettings, useSettingsStore } from "../useSettings";
+import {
+  emitApiDebugSuccessEffect,
+  shouldAutoDebugApiPatch,
+  useSettings,
+  useSettingsStore,
+} from "../useSettings";
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -32,7 +37,7 @@ describe("useSettings", () => {
     useSettingsStore.setState({
       settings: {
         language: "zh",
-        theme: "mocha",
+        theme: "classic",
         editorFontSize: 14,
         editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
         defaultViewMode: "edit",
@@ -52,7 +57,7 @@ describe("useSettings", () => {
     const [settings] = result.current;
 
     expect(settings.language).toBe("zh");
-    expect(settings.theme).toBe("mocha");
+    expect(settings.theme).toBe("classic");
     expect(settings.editorFontSize).toBe(14);
   });
 
@@ -125,7 +130,7 @@ describe("useSettings", () => {
 
     expect(settings).toEqual({
       language: "zh",
-      theme: "mocha",
+      theme: "classic",
       editorFontSize: 14,
       editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
       defaultViewMode: "edit",
@@ -137,5 +142,58 @@ describe("useSettings", () => {
       embeddingApiKey: "",
       ollamaBaseUrl: "http://localhost:11434",
     });
+  });
+
+  it("migrates legacy mocha theme settings to classic", () => {
+    const legacySettings = {
+      language: "zh" as const,
+      theme: "mocha",
+      editorFontSize: 14,
+      editorFontFamily: "JetBrains Mono, 'Fira Code', monospace",
+      defaultViewMode: "edit" as const,
+      autoSaveInterval: 30,
+      llmProvider: "gemini" as const,
+      llmApiKey: "",
+      llmModel: "gemini-pro",
+      embeddingProvider: "none" as const,
+      embeddingApiKey: "",
+      ollamaBaseUrl: "http://localhost:11434",
+    };
+    localStorageMock.getItem.mockReturnValue(JSON.stringify(legacySettings));
+    vi.resetModules();
+
+    return import("../useSettings").then(({ useSettings: freshUseSettings }) => {
+      const { result } = renderHook(() => freshUseSettings());
+      expect(result.current[0].theme).toBe("classic");
+    });
+  });
+
+  it("detects API-bearing settings patches for save-and-debug", () => {
+    expect(shouldAutoDebugApiPatch({ llmApiKey: "sk-test" })).toBe(true);
+    expect(shouldAutoDebugApiPatch({ llmProvider: "openai" })).toBe(true);
+    expect(shouldAutoDebugApiPatch({ llmModel: "gpt-4o-mini" })).toBe(true);
+    expect(shouldAutoDebugApiPatch({ theme: "latte" })).toBe(false);
+  });
+
+  it("emits a sanitized API debug success effect event", () => {
+    const listener = vi.fn();
+    window.addEventListener("feroha:api-debug-success", listener);
+
+    emitApiDebugSuccessEffect({
+      provider: "openai",
+      model: "gpt-4o-mini",
+      latencyMs: 42,
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    const event = listener.mock.calls[0][0] as CustomEvent;
+    expect(event.detail).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o-mini",
+      latencyMs: 42,
+    });
+    expect(JSON.stringify(event.detail)).not.toContain("sk-");
+
+    window.removeEventListener("feroha:api-debug-success", listener);
   });
 });

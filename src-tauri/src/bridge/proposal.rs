@@ -119,9 +119,11 @@ impl BridgeProposalStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ProposalActionKind {
     ApproveTask,
+    ApproveWorkflowPatch,
     OpenDiff,
     OpenTrace,
     ApplyGhost,
+    RejectWorkflowPatch,
     Reject,
     Archive,
 }
@@ -334,6 +336,86 @@ impl BridgeProposal {
         }
     }
 
+    pub fn for_workflow_patch(
+        run_id: &str,
+        patch: &crate::harness::workflow::WorkflowPatch,
+        trust_snapshot: TrustSnapshot,
+        now: u64,
+    ) -> Self {
+        let impact = Self::impact_from_workflow_patch(patch);
+        let risk = Self::workflow_patch_risk(patch, &impact);
+        Self {
+            id: Self::next_id(),
+            source: BridgeProposalSource::Scheduler,
+            source_ref: SourceRef {
+                kind: SourceRefKind::SchedulerJob,
+                id: run_id.to_string(),
+                path: Some(patch.workflow_id.clone()),
+            },
+            intent: format!(
+                "审查 Workflow patch: {} v{} -> v{}",
+                patch.workflow_id, patch.from_version, patch.to_version
+            ),
+            summary: format!(
+                "Workflow patch `{}` 将 `{}` 从 v{} 调整到 v{}，包含 {} 个操作。",
+                patch.patch_id,
+                patch.workflow_id,
+                patch.from_version,
+                patch.to_version,
+                patch.ops.len()
+            ),
+            task_type: Some("workflow_patch".to_string()),
+            sandbox_summary: None,
+            expected_output: Some(
+                "human decision recorded into workflow runtime ledger".to_string(),
+            ),
+            risk_reason: Some(
+                "Workflow patch 会改变 AI 面运行时编排，必须由 bridge 审查后才能回写 ledger。"
+                    .to_string(),
+            ),
+            evidence: vec![EvidenceRef {
+                label: "Workflow patch verifier basis".to_string(),
+                kind: EvidenceKind::Verification,
+                reference: patch.patch_id.clone(),
+                confidence: None,
+                excerpt: Some(format!(
+                    "failed_steps={:?}; failed_goal_clauses={:?}; rationale={}",
+                    patch.basis.failed_steps, patch.basis.failed_goal_clauses, patch.rationale
+                )),
+            }],
+            risk,
+            impact,
+            status: BridgeProposalStatus::Pending,
+            actions: vec![
+                ProposalAction {
+                    id: "approve-patch".to_string(),
+                    label: "批准 patch".to_string(),
+                    kind: ProposalActionKind::ApproveWorkflowPatch,
+                    payload: serde_json::json!({
+                        "workflow_id": patch.workflow_id,
+                        "run_id": run_id,
+                        "patch": patch,
+                        "reason": "Human reviewer approved workflow patch."
+                    }),
+                },
+                ProposalAction {
+                    id: "reject-patch".to_string(),
+                    label: "拒绝 patch".to_string(),
+                    kind: ProposalActionKind::RejectWorkflowPatch,
+                    payload: serde_json::json!({
+                        "workflow_id": patch.workflow_id,
+                        "run_id": run_id,
+                        "patch": patch,
+                        "reason": "Human reviewer rejected workflow patch."
+                    }),
+                },
+            ],
+            trust_snapshot,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn for_ghost(
         ghost_id: &str,
         target_note: &str,
@@ -400,6 +482,7 @@ impl BridgeProposal {
         topic: &str,
         claim_count: usize,
         violation_count: usize,
+        kernel_name: &str,
         related_notes: Vec<String>,
         trust_snapshot: TrustSnapshot,
         now: u64,
@@ -421,7 +504,7 @@ impl BridgeProposal {
             },
             intent: format!("审阅 Scientist 精炼结果: {}", topic),
             summary: format!(
-                "Scientist 提取了 {} 条 claims，发现 {} 个验证问题。",
+                "Scientist extracted {} claims; Proposition consistency found {} issue(s).",
                 claim_count, violation_count
             ),
             task_type: None,
@@ -429,13 +512,13 @@ impl BridgeProposal {
             expected_output: None,
             risk_reason: None,
             evidence: vec![EvidenceRef {
-                label: "Scientist verification".to_string(),
+                label: "Proposition consistency".to_string(),
                 kind: EvidenceKind::Verification,
                 reference: task_id.to_string(),
                 confidence: None,
                 excerpt: Some(format!(
-                    "claims={}, violations={}",
-                    claim_count, violation_count
+                    "kernel={}, claims={}, violations={}",
+                    kernel_name, claim_count, violation_count
                 )),
             }],
             risk: Self::classify_risk(&impact, violation_count > 0),
@@ -508,6 +591,63 @@ impl BridgeProposal {
             trust_snapshot,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn impact_from_workflow_patch(patch: &crate::harness::workflow::WorkflowPatch) -> ImpactScope {
+        let notes = patch
+            .predicted_impact
+            .get("notes")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        ImpactScope {
+            notes,
+            creates_files: patch
+                .predicted_impact
+                .get("creates_files")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            modifies_notes: patch
+                .predicted_impact
+                .get("modifies_notes")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            exports_data: patch
+                .predicted_impact
+                .get("exports_data")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            external_side_effect: patch
+                .predicted_impact
+                .get("external_side_effect")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        }
+    }
+
+    fn workflow_patch_risk(
+        patch: &crate::harness::workflow::WorkflowPatch,
+        impact: &ImpactScope,
+    ) -> ProposalRisk {
+        match patch
+            .predicted_impact
+            .get("risk")
+            .and_then(|value| value.as_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("high") => ProposalRisk::High,
+            Some("low") => ProposalRisk::Low,
+            Some("medium") => ProposalRisk::Medium,
+            _ if Self::classify_risk(impact, false) == ProposalRisk::High => ProposalRisk::High,
+            _ => ProposalRisk::Medium,
         }
     }
 }
@@ -609,6 +749,7 @@ mod tests {
             "Deep research",
             4,
             1,
+            "PropositionKernel",
             vec!["Note.md".to_string()],
             TrustSnapshot::default(),
             1,
@@ -616,6 +757,13 @@ mod tests {
 
         assert_eq!(proposal.source, BridgeProposalSource::Scientist);
         assert_eq!(proposal.risk, ProposalRisk::High);
+        assert!(proposal.summary.contains("Proposition consistency"));
+        assert_eq!(proposal.evidence[0].label, "Proposition consistency");
+        assert!(proposal.evidence[0]
+            .excerpt
+            .as_ref()
+            .unwrap()
+            .contains("kernel=PropositionKernel"));
     }
 
     #[test]
@@ -649,5 +797,59 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.kind == ProposalActionKind::Reject));
+    }
+
+    #[test]
+    fn workflow_patch_proposal_contains_patch_review_actions() {
+        let patch = crate::harness::workflow::WorkflowPatch {
+            patch_id: "patch_wf_runtime_v1_to_v2".to_string(),
+            workflow_id: "wf_runtime".to_string(),
+            from_version: 1,
+            to_version: 2,
+            basis: crate::harness::workflow::PatchBasis {
+                failed_steps: vec!["S001".to_string()],
+                failed_goal_clauses: vec![2],
+            },
+            ops: vec![
+                crate::harness::workflow::WorkflowPatchOp::ReplaceStepStatus {
+                    step_id: "S001".to_string(),
+                    status: crate::harness::workflow::WorkflowStepStatus::Pending,
+                },
+            ],
+            rationale: "Retry verifier step after human review.".to_string(),
+            predicted_impact: serde_json::json!({ "risk": "medium" }),
+        };
+
+        let proposal =
+            BridgeProposal::for_workflow_patch("run_runtime", &patch, TrustSnapshot::default(), 1);
+
+        assert_eq!(proposal.source, BridgeProposalSource::Scheduler);
+        assert_eq!(proposal.source_ref.kind, SourceRefKind::SchedulerJob);
+        assert_eq!(proposal.source_ref.id, "run_runtime");
+        assert_eq!(proposal.source_ref.path.as_deref(), Some("wf_runtime"));
+        assert_eq!(proposal.risk, ProposalRisk::Medium);
+        assert!(proposal.summary.contains("patch_wf_runtime_v1_to_v2"));
+        assert_eq!(proposal.evidence[0].kind, EvidenceKind::Verification);
+
+        let approve = proposal
+            .actions
+            .iter()
+            .find(|action| action.kind == ProposalActionKind::ApproveWorkflowPatch)
+            .expect("proposal should expose approve workflow patch action");
+        assert_eq!(approve.payload["workflow_id"], "wf_runtime");
+        assert_eq!(approve.payload["run_id"], "run_runtime");
+        assert_eq!(
+            approve.payload["patch"]["patch_id"],
+            "patch_wf_runtime_v1_to_v2"
+        );
+
+        let reject = proposal
+            .actions
+            .iter()
+            .find(|action| action.kind == ProposalActionKind::RejectWorkflowPatch)
+            .expect("proposal should expose reject workflow patch action");
+        assert_eq!(reject.payload["workflow_id"], "wf_runtime");
+        assert_eq!(reject.payload["run_id"], "run_runtime");
+        assert_eq!(reject.payload["patch"]["workflow_id"], "wf_runtime");
     }
 }

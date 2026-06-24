@@ -1,7 +1,16 @@
 import { useState } from "react";
 import FeroHaIcon from "./FeroHaIcon";
-import { useSettings, Language, ThemeName, LLMProvider, EmbeddingProvider, EditorViewMode } from "../hooks/useSettings";
-import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import {
+  useSettings,
+  Language,
+  ThemeName,
+  LLMProvider,
+  EmbeddingProvider,
+  EditorViewMode,
+  saveAndDebugApiSettings,
+} from "../hooks/useSettings";
+import { shortcutHelpRows } from "../hooks/useKeyboardShortcuts";
+import { useAppStore } from "../hooks/useAppStore";
 
 const LANGUAGES: { value: Language; label: string }[] = [
   { value: "zh", label: "中文" },
@@ -9,10 +18,10 @@ const LANGUAGES: { value: Language; label: string }[] = [
 ];
 
 const THEMES: { value: ThemeName; label: string; color: string }[] = [
-  { value: "feroha", label: "FeroHa", color: "#030d08" },
-  { value: "mocha", label: "Classic", color: "#1e1e2e" },
+  { value: "feroha", label: "深绿", color: "#030d08" },
+  { value: "classic", label: "Classic", color: "#1e1e2e" },
   { value: "macchiato", label: "Macchiato", color: "#24273a" },
-  { value: "frappe", label: "Frappé", color: "#303446" },
+  { value: "frappe", label: "Frappe", color: "#303446" },
   { value: "latte", label: "Latte", color: "#eff1f5" },
 ];
 
@@ -21,18 +30,18 @@ const LLM_PROVIDERS: { value: LLMProvider; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "deepseek", label: "DeepSeek" },
   { value: "anthropic", label: "Anthropic Claude" },
-  { value: "ollama", label: "Ollama (Local)" },
+  { value: "ollama", label: "Ollama 本地" },
 ];
 
 const EMBEDDING_PROVIDERS: { value: EmbeddingProvider; label: string }[] = [
   { value: "gemini", label: "Google Gemini" },
   { value: "openai", label: "OpenAI" },
-  { value: "none", label: "None" },
+  { value: "none", label: "关闭" },
 ];
 
 const VIEW_MODES = [
-  { value: "edit", label: "Edit" },
-  { value: "preview", label: "Preview" },
+  { value: "edit", label: "编辑" },
+  { value: "preview", label: "预览" },
 ];
 
 interface CollapsibleSectionProps {
@@ -46,67 +55,81 @@ function CollapsibleSection({ icon, title, defaultOpen = true, children }: Colla
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div style={styles.section}>
-      <div
+    <section style={styles.section}>
+      <button
+        type="button"
         style={styles.sectionHeader}
         onClick={() => setOpen(!open)}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        aria-expanded={open}
       >
         <FeroHaIcon name={open ? "ChevronDown" : "ChevronRight"} size={12} />
         <FeroHaIcon name={icon} size={14} />
         <span style={styles.sectionTitle}>{title}</span>
-      </div>
-      <div
-        style={{
-          ...styles.sectionContentWrapper,
-          maxHeight: open ? "2000px" : "0px",
-        }}
-      >
+      </button>
+      <div style={{ ...styles.sectionContentWrapper, maxHeight: open ? "2000px" : "0px" }}>
         <div style={styles.sectionContent}>{children}</div>
       </div>
-    </div>
+    </section>
   );
 }
 
 export default function SettingsPanel() {
   const [settings, update] = useSettings();
-  const { shortcuts } = useKeyboardShortcuts({});
-  const t = settings.language === "zh";
+  const mode = useAppStore((s) => s.mode);
+  const shortcuts = shortcutHelpRows(mode);
+  const [apiDebugStatus, setApiDebugStatus] = useState("");
+  const [isDebuggingApi, setIsDebuggingApi] = useState(false);
+
+  const handleSaveAndDebugApi = async () => {
+    setIsDebuggingApi(true);
+    setApiDebugStatus("正在保存并调试 API...");
+    try {
+      const result = await saveAndDebugApiSettings(settings);
+      if (result.ok) {
+        setApiDebugStatus(`调试成功：${result.provider} / ${result.model}`);
+      } else {
+        setApiDebugStatus(result.error || "API 调试未通过");
+      }
+    } catch (error) {
+      setApiDebugStatus(`调试失败：${String(error)}`);
+    } finally {
+      setIsDebuggingApi(false);
+    }
+  };
 
   return (
     <div style={styles.container}>
-      <h2 style={styles.title}>
-        {t ? "设置" : "Settings"}
-      </h2>
+      <header style={styles.header}>
+        <div>
+          <h2 style={styles.title}>设置</h2>
+          <p style={styles.subtitle}>配置界面、编辑器、模型和快捷键。</p>
+        </div>
+      </header>
 
-      <CollapsibleSection icon="Palette" title={t ? "外观" : "Appearance"}>
+      <CollapsibleSection icon="Palette" title="外观">
         <div style={styles.configGroup}>
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "语言" : "Language"}
-            </label>
+            <label style={styles.configLabel}>语言</label>
             <select
               style={styles.select}
               value={settings.language}
               onChange={(e) => update({ language: e.target.value as Language })}
             >
-              {LANGUAGES.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
+              {LANGUAGES.map((language) => (
+                <option key={language.value} value={language.value}>
+                  {language.label}
                 </option>
               ))}
             </select>
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "主题" : "Theme"}
-            </label>
+            <label style={styles.configLabel}>主题</label>
             <div style={styles.themeGrid}>
               {THEMES.map((theme) => (
                 <button
                   key={theme.value}
+                  type="button"
                   style={{
                     ...styles.themeBtn,
                     backgroundColor: theme.color,
@@ -118,9 +141,7 @@ export default function SettingsPanel() {
                   onClick={() => update({ theme: theme.value })}
                   title={theme.label}
                 >
-                  <span style={styles.themeLabel}>
-                    {theme.label}
-                  </span>
+                  <span style={styles.themeLabel}>{theme.label}</span>
                 </button>
               ))}
             </div>
@@ -128,12 +149,10 @@ export default function SettingsPanel() {
         </div>
       </CollapsibleSection>
 
-      <CollapsibleSection icon="Monitor" title={t ? "编辑器" : "Editor"}>
+      <CollapsibleSection icon="Monitor" title="编辑器">
         <div style={styles.configGroup}>
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "编辑器字号" : "Editor Font Size"}
-            </label>
+            <label style={styles.configLabel}>编辑器字号</label>
             <div style={styles.sliderRow}>
               <input
                 type="range"
@@ -141,9 +160,7 @@ export default function SettingsPanel() {
                 max={24}
                 step={1}
                 value={settings.editorFontSize}
-                onChange={(e) =>
-                  update({ editorFontSize: Number(e.target.value) })
-                }
+                onChange={(e) => update({ editorFontSize: Number(e.target.value) })}
                 style={styles.slider}
               />
               <span style={styles.sliderValue}>{settings.editorFontSize}px</span>
@@ -151,39 +168,33 @@ export default function SettingsPanel() {
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "字体族" : "Font Family"}
-            </label>
+            <label style={styles.configLabel}>字体族</label>
             <input
               type="text"
               style={styles.input}
               value={settings.editorFontFamily}
               onChange={(e) => update({ editorFontFamily: e.target.value })}
-              placeholder="JetBrains Mono, 'Fira Code', monospace"
+              placeholder="JetBrains Mono, Fira Code, monospace"
             />
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "默认视图模式" : "Default View Mode"}
-            </label>
+            <label style={styles.configLabel}>默认视图</label>
             <select
               style={styles.select}
               value={settings.defaultViewMode}
               onChange={(e) => update({ defaultViewMode: e.target.value as EditorViewMode })}
             >
-              {VIEW_MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
+              {VIEW_MODES.map((mode) => (
+                <option key={mode.value} value={mode.value}>
+                  {mode.label}
                 </option>
               ))}
             </select>
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "自动保存间隔（秒）" : "Auto-save Interval (s)"}
-            </label>
+            <label style={styles.configLabel}>自动保存间隔（秒）</label>
             <input
               type="number"
               style={styles.input}
@@ -191,65 +202,63 @@ export default function SettingsPanel() {
               max={300}
               value={settings.autoSaveInterval}
               onChange={(e) => update({ autoSaveInterval: Number(e.target.value) })}
-              placeholder="30"
             />
           </div>
         </div>
       </CollapsibleSection>
 
-      <CollapsibleSection icon="Keyboard" title={t ? "键盘快捷键" : "Keyboard Shortcuts"} defaultOpen={false}>
+      <CollapsibleSection icon="Keyboard" title="快捷键" defaultOpen={false}>
         <div className="shortcuts-table">
-          {shortcuts.map((sc, i) => (
-            <div key={i} className="shortcuts-row">
-              <kbd>{sc.ctrl ? "Ctrl+" : ""}{sc.alt ? "Alt+" : ""}{sc.shift ? "Shift+" : ""}{sc.key}</kbd>
-              <span>{sc.description}</span>
+          {shortcuts.map((shortcut, i) => (
+            <div key={`${shortcut.key}-${i}`} className="shortcuts-row">
+              <kbd>
+                {shortcut.ctrl ? "Ctrl+" : ""}
+                {shortcut.alt ? "Alt+" : ""}
+                {shortcut.shift ? "Shift+" : ""}
+                {shortcut.key}
+              </kbd>
+              <span>{shortcut.description}</span>
             </div>
           ))}
         </div>
       </CollapsibleSection>
 
-      <CollapsibleSection icon="Settings" title={t ? "AI 提供商" : "AI Providers"}>
+      <CollapsibleSection icon="Settings" title="AI 提供商">
         <div style={styles.configGroup}>
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "LLM 提供商" : "LLM Provider"}
-            </label>
+            <label style={styles.configLabel}>LLM 提供商</label>
             <select
               style={styles.select}
               value={settings.llmProvider}
               onChange={(e) => update({ llmProvider: e.target.value as LLMProvider })}
             >
-              {LLM_PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
+              {LLM_PROVIDERS.map((provider) => (
+                <option key={provider.value} value={provider.value}>
+                  {provider.label}
                 </option>
               ))}
             </select>
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              LLM API Key
-            </label>
+            <label style={styles.configLabel}>LLM API Key</label>
             <input
               type="password"
               style={styles.input}
               value={settings.llmApiKey}
               onChange={(e) => update({ llmApiKey: e.target.value })}
-              placeholder={t ? "输入 API Key" : "Enter API Key"}
+              placeholder="输入 API Key"
             />
           </div>
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "LLM 模型" : "LLM Model"}
-            </label>
+            <label style={styles.configLabel}>LLM 模型</label>
             <input
               type="text"
               style={styles.input}
               value={settings.llmModel}
               onChange={(e) => update({ llmModel: e.target.value })}
-              placeholder={t ? "输入模型名称" : "Enter model name"}
+              placeholder="输入模型名称"
             />
           </div>
 
@@ -267,17 +276,15 @@ export default function SettingsPanel() {
           )}
 
           <div style={styles.configRow}>
-            <label style={styles.configLabel}>
-              {t ? "Embedding 提供商" : "Embedding Provider"}
-            </label>
+            <label style={styles.configLabel}>Embedding 提供商</label>
             <select
               style={styles.select}
               value={settings.embeddingProvider}
               onChange={(e) => update({ embeddingProvider: e.target.value as EmbeddingProvider })}
             >
-              {EMBEDDING_PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
+              {EMBEDDING_PROVIDERS.map((provider) => (
+                <option key={provider.value} value={provider.value}>
+                  {provider.label}
                 </option>
               ))}
             </select>
@@ -285,28 +292,33 @@ export default function SettingsPanel() {
 
           {settings.embeddingProvider !== "none" && (
             <div style={styles.configRow}>
-              <label style={styles.configLabel}>
-                Embedding API Key
-              </label>
+              <label style={styles.configLabel}>Embedding API Key</label>
               <input
                 type="password"
                 style={styles.input}
                 value={settings.embeddingApiKey}
                 onChange={(e) => update({ embeddingApiKey: e.target.value })}
-                placeholder={t ? "输入 API Key" : "Enter API Key"}
+                placeholder="输入 API Key"
               />
             </div>
           )}
+
+          <div style={styles.apiDebugRow}>
+            <button
+              type="button"
+              style={styles.apiDebugButton}
+              onClick={handleSaveAndDebugApi}
+              disabled={isDebuggingApi}
+              aria-label="保存并调试 API"
+            >
+              <FeroHaIcon name={isDebuggingApi ? "Loader" : "Sparkles"} size={14} />
+              <span>{isDebuggingApi ? "调试中..." : "保存并调试 API"}</span>
+            </button>
+            {apiDebugStatus && <span role="status" style={styles.apiDebugStatus}>{apiDebugStatus}</span>}
+          </div>
         </div>
       </CollapsibleSection>
 
-      <CollapsibleSection icon="Info" title={t ? "关于" : "About"}>
-        <div style={styles.aboutSection}>
-          <span style={styles.aboutName}>FeroHa — Dual-Track AI Note IDE</span>
-          <span style={styles.aboutMeta}>v3.0.0</span>
-          <span style={styles.aboutMeta}>Tauri 2.0 · React 18 · Rust</span>
-        </div>
-      </CollapsibleSection>
     </div>
   );
 }
@@ -315,19 +327,34 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     display: "flex",
     flexDirection: "column",
-    gap: "4px",
-    padding: "16px",
+    gap: "8px",
+    padding: "22px 28px",
     height: "100%",
     overflowY: "auto",
     color: "var(--text-primary)",
+    boxSizing: "border-box",
+    maxWidth: "960px",
+    width: "100%",
+    margin: "0 auto",
+  },
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: "14px",
+    borderBottom: "1px solid var(--border-color)",
   },
   title: {
-    fontSize: "16px",
-    fontWeight: 600,
+    fontSize: "20px",
+    fontWeight: 700,
     color: "var(--text-primary)",
     margin: 0,
-    paddingBottom: "12px",
-    borderBottom: "1px solid var(--border-color)",
+    letterSpacing: 0,
+  },
+  subtitle: {
+    margin: "6px 0 0",
+    fontSize: "12px",
+    color: "var(--text-secondary)",
   },
   section: {
     borderBottom: "1px solid var(--border-muted)",
@@ -336,15 +363,20 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: "8px",
-    padding: "8px 0",
+    width: "100%",
+    padding: "10px 0",
     cursor: "pointer",
+    border: "none",
     borderBottom: "1px solid var(--border-color)",
+    backgroundColor: "transparent",
+    color: "var(--text-primary)",
     transition: "background var(--transition-fast) var(--easing-smooth)",
-    userSelect: "none" as const,
+    userSelect: "none",
+    textAlign: "left",
   },
   sectionTitle: {
     fontSize: "13px",
-    fontWeight: 600,
+    fontWeight: 700,
     color: "var(--text-primary)",
   },
   sectionContentWrapper: {
@@ -355,28 +387,29 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: "12px",
-    padding: "12px 0",
+    padding: "14px 0",
   },
   configGroup: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: "14px 18px",
   },
   configRow: {
     display: "flex",
     flexDirection: "column",
-    gap: "4px",
+    gap: "6px",
+    minWidth: 0,
   },
   configLabel: {
-    fontSize: "11px",
+    fontSize: "12px",
     color: "var(--text-secondary)",
-    fontWeight: 500,
+    fontWeight: 600,
   },
   select: {
-    padding: "6px 10px",
+    padding: "8px 10px",
     backgroundColor: "var(--bg-input)",
     border: "1px solid var(--border-color)",
-    borderRadius: "4px",
+    borderRadius: "6px",
     color: "var(--text-primary)",
     fontSize: "13px",
     outline: "none",
@@ -384,24 +417,50 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
   },
   input: {
-    padding: "6px 10px",
+    padding: "8px 10px",
     backgroundColor: "var(--bg-input)",
     border: "1px solid var(--border-color)",
-    borderRadius: "4px",
+    borderRadius: "6px",
     color: "var(--text-primary)",
     fontSize: "13px",
     outline: "none",
     width: "100%",
-    boxSizing: "border-box" as const,
+    boxSizing: "border-box",
+  },
+  apiDebugRow: {
+    gridColumn: "1 / -1",
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    flexWrap: "wrap",
+  },
+  apiDebugButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "7px",
+    minHeight: "32px",
+    padding: "7px 12px",
+    border: "1px solid var(--control-border-strong)",
+    borderRadius: "6px",
+    background: "var(--control-bg)",
+    color: "var(--text-primary)",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontWeight: 700,
+  },
+  apiDebugStatus: {
+    color: "var(--text-secondary)",
+    fontSize: "12px",
   },
   themeGrid: {
     display: "flex",
     gap: "8px",
-    flexWrap: "wrap" as const,
+    flexWrap: "wrap",
   },
   themeBtn: {
-    width: "64px",
-    height: "48px",
+    width: "74px",
+    height: "52px",
     borderRadius: "6px",
     cursor: "pointer",
     display: "flex",
@@ -413,7 +472,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   themeLabel: {
     fontSize: "10px",
-    fontWeight: 500,
+    fontWeight: 600,
     color: "var(--text-primary)",
   },
   sliderRow: {
@@ -431,20 +490,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--text-secondary)",
     fontFamily: "var(--font-mono)",
     minWidth: "36px",
-  },
-  aboutSection: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px",
-    padding: "8px 0",
-  },
-  aboutName: {
-    fontSize: "14px",
-    fontWeight: 600,
-    color: "var(--text-primary)",
-  },
-  aboutMeta: {
-    fontSize: "11px",
-    color: "var(--text-muted)",
   },
 };

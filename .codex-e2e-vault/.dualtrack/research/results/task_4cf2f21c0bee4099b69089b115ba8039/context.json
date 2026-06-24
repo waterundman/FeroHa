@@ -1,0 +1,10 @@
+{
+  "card_id": null,
+  "card_type": null,
+  "intent": "card:codex-live-diff-fixed-smoke",
+  "ghost_ids": [
+    "ghost_8560a8e37b674cf59151da90933ca1ac"
+  ],
+  "feedback_summary": null,
+  "phase_timings": {}
+}

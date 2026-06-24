@@ -1,12 +1,17 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import BridgeInbox from "../BridgeInbox";
+import BridgeInbox, {
+  bridgeRiskLabel,
+  bridgeSourceLabel,
+  bridgeStatusLabel,
+  bridgeTaskTypeLabel,
+} from "../BridgeInbox";
 import type { BridgeProposal } from "../../types/bridge-proposal";
 import { useAppStore } from "../../hooks/useAppStore";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 const listenMock = vi.hoisted(() =>
-  vi.fn(async (_eventName: string, _handler: () => Promise<void> | void) => vi.fn())
+  vi.fn(async (_eventName: string, _handler: () => Promise<void> | void) => vi.fn()),
 );
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -64,6 +69,7 @@ describe("BridgeInbox", () => {
       bridgeLoading: false,
       bridgeError: null,
       activePanel: "bridge",
+      mode: "human",
     });
   });
 
@@ -72,11 +78,52 @@ describe("BridgeInbox", () => {
 
     render(<BridgeInbox isTauri />);
 
-    expect(await screen.findByText("No bridge proposals")).toBeDefined();
+    expect(await screen.findByText("暂无桥接提案")).toBeDefined();
     expect(invokeMock).toHaveBeenCalledWith("list_bridge_proposals", {});
   });
 
-  it("groups pending and resolved proposals", async () => {
+  it("explains that Bridge Review is a decision-first human review surface", () => {
+    render(<BridgeInbox isTauri={false} />);
+
+    expect(screen.getByText(/Bridge Review 审查 AI 交付物进入人类面前的关键决定/)).toBeDefined();
+  });
+
+  it("renders local preview proposals without Tauri so the mock review chain stays clickable", async () => {
+    useAppStore.setState({
+      bridgeProposals: [
+        proposal({
+          intent: "Preview proposal",
+          summary: "Local simulation proposal",
+          source: "scheduler",
+          source_ref: { kind: "task", id: "sim-task-good" },
+          actions: [
+            {
+              id: "open-diff",
+              label: "Open Diff",
+              kind: "open_diff",
+              payload: { ghost_id: "sim-task-good" },
+            },
+          ],
+        }),
+      ],
+    });
+    invokeMock.mockRejectedValueOnce(new Error("Bridge store not initialized"));
+
+    render(<BridgeInbox isTauri={false} />);
+
+    expect(screen.getAllByText("Preview proposal").length).toBeGreaterThan(0);
+    expect(screen.getByText(/浏览器预览使用本地模拟提案/)).toBeDefined();
+
+    const buttons = screen.getAllByRole("button", { name: "Open Diff" });
+    fireEvent.click(buttons[0]);
+
+    await waitFor(() => {
+      expect(useAppStore.getState().activePanel).toBe("diff");
+      expect(useAppStore.getState().mode).toBe("human");
+    });
+  });
+
+  it("groups pending and resolved proposals with readable human review copy", async () => {
     invokeMock.mockResolvedValueOnce([
       proposal(),
       proposal({
@@ -91,10 +138,13 @@ describe("BridgeInbox", () => {
 
     render(<BridgeInbox isTauri />);
 
-    expect(await screen.findByText("Pending Review")).toBeDefined();
-    expect(screen.getByText("Resolved")).toBeDefined();
+    expect(await screen.findByText("桥接审查")).toBeDefined();
+    expect(screen.getAllByText("待审查 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已处理 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("批准研究任务").length).toBeGreaterThan(0);
     expect(screen.getAllByText("归档梦境洞察").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("低风险").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("信任 70%").length).toBeGreaterThan(0);
   });
 
   it("shows typed task review metadata in the detail pane", async () => {
@@ -110,14 +160,38 @@ describe("BridgeInbox", () => {
 
     render(<BridgeInbox isTauri />);
 
-    expect(await screen.findByText("Task Type")).toBeDefined();
-    expect(screen.getByText("research")).toBeDefined();
-    expect(screen.getByText("Sandbox")).toBeDefined();
+    expect(await screen.findByText("任务类型")).toBeDefined();
+    expect(screen.getByText("研究")).toBeDefined();
+    expect(screen.getByText("沙箱")).toBeDefined();
     expect(screen.getByText("tools: vector_search, web_search; network: allowlisted")).toBeDefined();
-    expect(screen.getByText("Expected Output")).toBeDefined();
+    expect(screen.getByText("预期输出")).toBeDefined();
     expect(screen.getByText("research brief with sources")).toBeDefined();
-    expect(screen.getByText("Risk Reason")).toBeDefined();
+    expect(screen.getByText("风险原因")).toBeDefined();
     expect(screen.getByText("medium risk because research may use network search")).toBeDefined();
+  });
+
+  it("labels scientist proposals as LeanLite proposition consistency", async () => {
+    invokeMock.mockResolvedValueOnce([
+      proposal({
+        source: "scientist",
+        source_ref: { kind: "scientist_output", id: "task_1" },
+        evidence: [
+          {
+            label: "Proposition consistency",
+            kind: "verification",
+            ref: "task_1",
+            excerpt: "kernel=PropositionKernel, claims=2, violations=1",
+          },
+        ],
+      }),
+    ]);
+
+    render(<BridgeInbox isTauri />);
+
+    expect(await screen.findByText("LeanLite")).toBeDefined();
+    expect(screen.getByText("命题一致性")).toBeDefined();
+    expect(screen.getAllByText("Proposition consistency").length).toBeGreaterThan(0);
+    expect(screen.getByText("kernel=PropositionKernel, claims=2, violations=1")).toBeDefined();
   });
 
   it("executes proposal actions through the bridge command", async () => {
@@ -153,7 +227,7 @@ describe("BridgeInbox", () => {
 
     render(<BridgeInbox isTauri />);
 
-    expect(await screen.findByText("Pending Review")).toBeDefined();
+    expect((await screen.findAllByText("待审查 1")).length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(updateHandler).not.toBeNull();
     });
@@ -165,7 +239,7 @@ describe("BridgeInbox", () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("navigates to the target panel when an action returns navigation metadata", async () => {
+  it("moves diff review navigation to the human face", async () => {
     invokeMock
       .mockResolvedValueOnce([
         proposal({
@@ -199,6 +273,36 @@ describe("BridgeInbox", () => {
 
     await waitFor(() => {
       expect(useAppStore.getState().activePanel).toBe("diff");
+      expect(useAppStore.getState().mode).toBe("human");
+    });
+  });
+
+  it("falls back to local diff navigation when the bridge store is unavailable", async () => {
+    invokeMock
+      .mockResolvedValueOnce([
+        proposal({
+          source: "scheduler",
+          source_ref: { kind: "task", id: "sim-task-good" },
+          actions: [
+            {
+              id: "open-diff",
+              label: "Open Diff",
+              kind: "open_diff",
+              payload: { ghost_id: "sim-task-good" },
+            },
+          ],
+        }),
+      ])
+      .mockRejectedValueOnce(new Error("Bridge store not initialized"));
+
+    render(<BridgeInbox isTauri />);
+
+    const buttons = await screen.findAllByRole("button", { name: "Open Diff" });
+    fireEvent.click(buttons[0]);
+
+    await waitFor(() => {
+      expect(useAppStore.getState().activePanel).toBe("diff");
+      expect(useAppStore.getState().mode).toBe("human");
     });
   });
 
@@ -242,5 +346,16 @@ describe("BridgeInbox", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledTimes(3);
     });
+  });
+});
+
+describe("BridgeInbox localized metadata", () => {
+  it("localizes backend proposal enums for the human review surface", () => {
+    expect(bridgeSourceLabel("tool")).toBe("工具");
+    expect(bridgeStatusLabel("pending")).toBe("待审查");
+    expect(bridgeRiskLabel("high")).toBe("高风险");
+    expect(bridgeTaskTypeLabel("write_proposal")).toBe("写作提案");
+    expect(bridgeTaskTypeLabel("mdt_index")).toBe("JSON-LD 索引（MDT 兼容）");
+    expect(bridgeTaskTypeLabel("workflow_patch")).toBe("Workflow 补丁");
   });
 });

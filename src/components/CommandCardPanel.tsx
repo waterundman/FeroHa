@@ -135,15 +135,15 @@ export default function CommandCardPanel({
   const getCategoryLabel = (category: CommandCategory): string => {
     switch (category) {
       case "content":
-        return "Content Operations";
+        return "内容操作";
       case "analysis":
-        return "Analysis";
+        return "分析";
       case "format":
-        return "Format & Transform";
+        return "格式转换";
       case "system":
-        return "System";
+        return "系统";
       default:
-        return "Other";
+        return "其他";
     }
   };
 
@@ -152,10 +152,10 @@ export default function CommandCardPanel({
   return (
     <div className="command-card-panel">
       <div className="panel-overlay" onClick={onClose} />
-      <div className="panel-content">
+      <div className="panel-content" role="dialog" aria-modal="true" aria-label="指令卡">
         <div className="panel-header">
-          <h3>Command Cards</h3>
-          <button className="close-btn" onClick={onClose} aria-label="Close panel">
+          <h3>指令卡</h3>
+          <button className="close-btn" onClick={onClose} aria-label="关闭指令卡">
             <FeroHaIcon name="X" size={18} />
           </button>
         </div>
@@ -165,7 +165,7 @@ export default function CommandCardPanel({
           <input
             ref={searchInputRef}
             type="text"
-            placeholder="Search commands..."
+            placeholder="搜索指令..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="search-input"
@@ -174,7 +174,7 @@ export default function CommandCardPanel({
             <button
               className="clear-search"
               onClick={() => setSearchQuery("")}
-              aria-label="Clear search"
+              aria-label="清除搜索"
             >
               <FeroHaIcon name="X" size={12} />
             </button>
@@ -186,7 +186,7 @@ export default function CommandCardPanel({
             className={`category-tab ${activeCategory === "all" ? "active" : ""}`}
             onClick={() => setActiveCategory("all")}
           >
-            All
+            全部
           </button>
           {(["content", "analysis", "format", "system"] as CommandCategory[]).map(
             (category) => (
@@ -224,8 +224,8 @@ export default function CommandCardPanel({
           {filteredCards.length === 0 && (
             <div className="no-results">
               <span className="no-results-icon"><FeroHaIcon name="Search" size={48} /></span>
-              <p>No commands found</p>
-              <p className="no-results-hint">Try a different search term</p>
+              <p>没有找到指令</p>
+              <p className="no-results-hint">换一个关键词试试</p>
             </div>
           )}
         </div>
@@ -241,7 +241,7 @@ export default function CommandCardPanel({
             </div>
 
             <div className="params-form">
-              <h5 className="params-title">Parameters</h5>
+              <h5 className="params-title">参数</h5>
               {Object.entries(selectedCard.params).map(([key, defaultValue]) => (
                 <div key={key} className="param-row">
                   <label className="param-label">{key}:</label>
@@ -257,14 +257,14 @@ export default function CommandCardPanel({
                       )
                     }
                     className="param-input"
-                    placeholder={`Enter ${key}...`}
+                    placeholder={`输入 ${key}...`}
                   />
                 </div>
               ))}
             </div>
 
             <button className="execute-btn" onClick={handleExecute}>
-              Execute Command
+              执行指令
             </button>
           </div>
         )}
@@ -304,7 +304,7 @@ export default function CommandCardPanel({
         .panel-content {
           position: relative;
           background: #1e1e2e;
-          border-radius: 12px;
+          border-radius: 8px;
           width: 90%;
           max-width: 1000px;
           max-height: 80vh;

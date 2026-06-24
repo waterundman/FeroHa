@@ -1,4 +1,5 @@
 use super::llm_router::LlmRouter;
+use super::research_graph::{self, ResearchGraphArtifacts};
 use super::research_trace;
 use super::vectordb::VectorStore;
 use crate::graph::manifest::{GraphManifest, GraphManifestBuilder};
@@ -128,6 +129,14 @@ pub struct ResearchPlan {
     pub current_stage: usize,
     pub max_iterations: usize,
     pub iteration_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepResearchOutcome {
+    pub report: String,
+    pub ghost_ids: Vec<String>,
+    pub graph_artifacts: Option<ResearchGraphArtifacts>,
+    pub retrieval_results: Vec<SubagentResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -618,7 +627,7 @@ impl Subagent {
         task_id: &str,
         dualtrack_dir: &std::path::Path,
         sandbox_policy: Option<&crate::ai::sandbox::SandboxPolicy>,
-    ) -> Result<(String, Vec<String>), String> {
+    ) -> Result<DeepResearchOutcome, String> {
         let max_iterations = 3;
         let plan_id = format!("plan_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
 
@@ -700,6 +709,7 @@ impl Subagent {
         };
 
         let mut all_results: Vec<SubagentEntry> = Vec::new();
+        let mut retrieval_results: Vec<SubagentResult> = Vec::new();
         let mut intermediate_reports: Vec<String> = Vec::new();
         let mut hypotheses: Vec<String> = Vec::new();
         let ghost_ids: Vec<String> = Vec::new();
@@ -734,6 +744,7 @@ impl Subagent {
                     let results = self
                         .execute_maybe_filtered(&job, vector_store, sandbox_policy)
                         .await;
+                    retrieval_results.extend(results.clone());
                     for r in &results {
                         all_results.extend(r.entries.clone());
                     }
@@ -868,6 +879,7 @@ impl Subagent {
                                             sandbox_policy,
                                         )
                                         .await;
+                                    retrieval_results.extend(more_results.clone());
                                     for r in &more_results {
                                         all_results.extend(r.entries.clone());
                                     }
@@ -956,6 +968,28 @@ impl Subagent {
             report.push_str(intermediate_reports.last().unwrap_or(&String::new()));
         }
 
+        let graph = research_graph::build_deep_research_graph(
+            task_id,
+            question,
+            &current_plan,
+            &all_results,
+            &hypotheses,
+            &intermediate_reports,
+        );
+        let graph_artifacts =
+            match research_graph::write_research_graph_artifacts(dualtrack_dir, task_id, &graph) {
+                Ok(artifacts) => {
+                    report.push_str("\n\n## Research Graph\n\n");
+                    report.push_str(&format!("- JSON: `{}`\n", artifacts.graph_json));
+                    report.push_str(&format!("- Report: `{}`\n", artifacts.graph_report));
+                    Some(artifacts)
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to write research graph artifacts: {}", error);
+                    None
+                }
+            };
+
         // Write trace
         let _ = research_trace::write_cot_log(
             dualtrack_dir,
@@ -970,7 +1004,12 @@ impl Subagent {
             None,
         );
 
-        Ok((report, ghost_ids))
+        Ok(DeepResearchOutcome {
+            report,
+            ghost_ids,
+            graph_artifacts,
+            retrieval_results,
+        })
     }
 
     pub async fn generate_hypotheses(

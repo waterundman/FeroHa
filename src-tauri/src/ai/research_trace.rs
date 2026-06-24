@@ -22,6 +22,26 @@ pub struct FeedbackSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskEvidenceEntry {
+    pub title: String,
+    pub snippet: String,
+    pub url: Option<String>,
+    pub authors: Vec<String>,
+    pub year: Option<u32>,
+    pub source: String,
+    pub relevance_score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskEvidence {
+    pub source: String,
+    pub entries: Vec<TaskEvidenceEntry>,
+    pub hop: u32,
+    pub generated_keywords: Vec<String>,
+    pub total_found: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskContext {
     pub card_id: Option<String>,
     pub card_type: Option<String>,
@@ -29,6 +49,12 @@ pub struct TaskContext {
     pub ghost_ids: Vec<String>,
     pub feedback_summary: Option<FeedbackSummary>,
     pub phase_timings: HashMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_graph_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_graph_report_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retrieval_evidence: Vec<TaskEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +63,14 @@ pub struct TaskTrace {
     pub cot_log: String,
     pub result: String,
     pub context: Option<TaskContext>,
+}
+
+fn trace_paths_dir(dualtrack_dir: &Path, task_id: &str) -> std::path::PathBuf {
+    dualtrack_dir.join("research").join("paths").join(task_id)
+}
+
+fn trace_results_dir(dualtrack_dir: &Path, task_id: &str) -> std::path::PathBuf {
+    dualtrack_dir.join("research").join("results").join(task_id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,9 +85,7 @@ pub fn write_path_log(
     reason: &str,
     context: Option<&TaskContext>,
 ) -> io::Result<()> {
-    let dir = dualtrack_dir
-        .join(".dualtrack/research/paths")
-        .join(task_id);
+    let dir = trace_paths_dir(dualtrack_dir, task_id);
     fs::create_dir_all(&dir)?;
     let file_path = dir.join("path_log.jsonl");
     let mut file = std::fs::OpenOptions::new()
@@ -81,9 +113,7 @@ pub fn write_cot_log(
     content: &str,
     context: Option<&TaskContext>,
 ) -> io::Result<()> {
-    let dir = dualtrack_dir
-        .join(".dualtrack/research/paths")
-        .join(task_id);
+    let dir = trace_paths_dir(dualtrack_dir, task_id);
     fs::create_dir_all(&dir)?;
     let file_path = dir.join("cot_log.md");
     let final_content = if let Some(ctx) = context {
@@ -105,9 +135,7 @@ pub fn write_result_md(
     content: &str,
     context: Option<&TaskContext>,
 ) -> io::Result<()> {
-    let dir = dualtrack_dir
-        .join(".dualtrack/research/results")
-        .join(task_id);
+    let dir = trace_results_dir(dualtrack_dir, task_id);
     fs::create_dir_all(&dir)?;
     let file_path = dir.join("result.md");
 
@@ -146,6 +174,18 @@ pub fn write_result_md(
         for (key, val) in &ctx.phase_timings {
             final_content.push_str(&format!("  {}: {}\n", key, val));
         }
+        if let Some(path) = &ctx.research_graph_path {
+            final_content.push_str(&format!(
+                "research_graph_path: \"{}\"\n",
+                path.replace('"', "\\\"")
+            ));
+        }
+        if let Some(path) = &ctx.research_graph_report_path {
+            final_content.push_str(&format!(
+                "research_graph_report_path: \"{}\"\n",
+                path.replace('"', "\\\"")
+            ));
+        }
         final_content.push_str("---\n\n");
     }
 
@@ -165,9 +205,7 @@ pub fn write_result_md(
 }
 
 pub fn write_context(dualtrack_dir: &Path, task_id: &str, context: &TaskContext) -> io::Result<()> {
-    let dir = dualtrack_dir
-        .join(".dualtrack/research/results")
-        .join(task_id);
+    let dir = trace_results_dir(dualtrack_dir, task_id);
     fs::create_dir_all(&dir)?;
     let file_path = dir.join("context.json");
     let json = serde_json::to_string_pretty(context).map_err(io::Error::other)?;
@@ -176,9 +214,7 @@ pub fn write_context(dualtrack_dir: &Path, task_id: &str, context: &TaskContext)
 }
 
 pub fn get_task_trace(dualtrack_dir: &Path, task_id: &str) -> Result<TaskTrace, String> {
-    let path_dir = dualtrack_dir
-        .join(".dualtrack/research/paths")
-        .join(task_id);
+    let path_dir = trace_paths_dir(dualtrack_dir, task_id);
     let path_log_path = path_dir.join("path_log.jsonl");
 
     let raw_log = fs::read_to_string(&path_log_path)
@@ -199,9 +235,7 @@ pub fn get_task_trace(dualtrack_dir: &Path, task_id: &str) -> Result<TaskTrace, 
     let cot_log = fs::read_to_string(&cot_log_path)
         .map_err(|e| format!("Failed to read cot_log.md: {}", e))?;
 
-    let result_dir = dualtrack_dir
-        .join(".dualtrack/research/results")
-        .join(task_id);
+    let result_dir = trace_results_dir(dualtrack_dir, task_id);
     let result_path = result_dir.join("result.md");
     let result =
         fs::read_to_string(&result_path).map_err(|e| format!("Failed to read result.md: {}", e))?;
@@ -227,9 +261,64 @@ pub fn get_task_trace(dualtrack_dir: &Path, task_id: &str) -> Result<TaskTrace, 
 }
 
 pub fn has_trace(dualtrack_dir: &Path, task_id: &str) -> bool {
-    let path_log_path = dualtrack_dir
-        .join(".dualtrack/research/paths")
-        .join(task_id)
-        .join("path_log.jsonl");
+    let path_log_path = trace_paths_dir(dualtrack_dir, task_id).join("path_log.jsonl");
     path_log_path.exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_paths_use_passed_dualtrack_dir_without_nesting_dualtrack() {
+        let temp = tempfile::tempdir().unwrap();
+        let dualtrack_dir = temp.path().join(".dualtrack");
+        let task_id = "task_trace_path";
+
+        write_path_log(
+            &dualtrack_dir,
+            task_id,
+            0,
+            "query",
+            "local",
+            &[],
+            &[],
+            "reason",
+            None,
+        )
+        .unwrap();
+        write_cot_log(&dualtrack_dir, task_id, "cot", None).unwrap();
+        write_result_md(&dualtrack_dir, task_id, "result", None).unwrap();
+        write_context(
+            &dualtrack_dir,
+            task_id,
+            &TaskContext {
+                intent: "query".to_string(),
+                ..TaskContext::default()
+            },
+        )
+        .unwrap();
+
+        assert!(dualtrack_dir
+            .join("research/paths")
+            .join(task_id)
+            .join("path_log.jsonl")
+            .exists());
+        assert!(dualtrack_dir
+            .join("research/results")
+            .join(task_id)
+            .join("context.json")
+            .exists());
+        assert!(!dualtrack_dir
+            .join(".dualtrack/research/paths")
+            .join(task_id)
+            .join("path_log.jsonl")
+            .exists());
+        assert!(has_trace(&dualtrack_dir, task_id));
+
+        let trace = get_task_trace(&dualtrack_dir, task_id).unwrap();
+        assert_eq!(trace.path_log.len(), 1);
+        assert!(trace.result.contains("result"));
+        assert_eq!(trace.context.unwrap().intent, "query");
+    }
 }

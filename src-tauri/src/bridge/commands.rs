@@ -3,6 +3,7 @@ use crate::bridge::proposal::{
 };
 use crate::bridge::store::BridgeProposalStore;
 use crate::diff::ghost_store::GhostStatus;
+use crate::harness::workflow::WorkflowPatch;
 use crate::{AiState, AppState};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -44,6 +45,15 @@ fn source_ref_is_task_like(kind: &SourceRefKind) -> bool {
     matches!(kind, SourceRefKind::Task | SourceRefKind::SchedulerJob)
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WorkflowPatchDecisionPayload {
+    workflow_id: String,
+    run_id: String,
+    patch: WorkflowPatch,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 pub fn execute_action_against_store(
     store: &BridgeProposalStore,
     id: &str,
@@ -51,6 +61,9 @@ pub fn execute_action_against_store(
     mut approve_task: Option<&mut dyn FnMut(&str) -> Result<(), String>>,
     mut reject_task: Option<&mut dyn FnMut(&str) -> Result<(), String>>,
     mut reject_ghost: Option<&mut dyn FnMut(&str) -> Result<(), String>>,
+    mut record_workflow_patch_decision: Option<
+        &mut dyn FnMut(&str, &str, &WorkflowPatch, bool, &str) -> Result<(), String>,
+    >,
 ) -> Result<BridgeProposalActionResult, String> {
     let proposal = store
         .get(id)?
@@ -119,14 +132,53 @@ pub fn execute_action_against_store(
                     task_id, proposal.source_ref.id
                 ));
             }
+            if approve_task.is_none() {
+                return Err("approve_task action requires an approval handler".to_string());
+            }
             let updated = store.update_status(id, BridgeProposalStatus::Approved, now_millis())?;
             if let Some(approve) = approve_task.as_mut() {
                 if let Err(error) = approve(&proposal.source_ref.id) {
                     let _ = store.update_status(id, BridgeProposalStatus::Pending, now_millis());
                     return Err(error);
                 }
+            }
+            updated
+        }
+        ProposalActionKind::ApproveWorkflowPatch | ProposalActionKind::RejectWorkflowPatch => {
+            let accepted = action.kind == ProposalActionKind::ApproveWorkflowPatch;
+            let target_status = if accepted {
+                BridgeProposalStatus::Approved
             } else {
-                return Err("approve_task action requires an approval handler".to_string());
+                BridgeProposalStatus::Rejected
+            };
+            if record_workflow_patch_decision.is_none() {
+                return Err(
+                    "workflow patch action requires a workflow patch decision handler".to_string(),
+                );
+            }
+            let payload = parse_workflow_patch_decision_payload(&action.payload)?;
+            if payload.patch.workflow_id != payload.workflow_id {
+                return Err(format!(
+                    "workflow patch payload workflow_id does not match patch: {} != {}",
+                    payload.workflow_id, payload.patch.workflow_id
+                ));
+            }
+
+            let updated = store.update_status(id, target_status, now_millis())?;
+            if let Some(record) = record_workflow_patch_decision.as_mut() {
+                if let Err(error) = record(
+                    &payload.workflow_id,
+                    &payload.run_id,
+                    &payload.patch,
+                    accepted,
+                    payload
+                        .reason
+                        .as_deref()
+                        .unwrap_or("Bridge workflow patch decision"),
+                ) {
+                    let _ = store.update_status(id, BridgeProposalStatus::Pending, now_millis());
+                    return Err(error);
+                }
             }
             updated
         }
@@ -182,6 +234,13 @@ pub fn execute_action_against_store(
             "payload": action.payload,
         }),
     })
+}
+
+fn parse_workflow_patch_decision_payload(
+    payload: &serde_json::Value,
+) -> Result<WorkflowPatchDecisionPayload, String> {
+    serde_json::from_value(payload.clone())
+        .map_err(|err| format!("invalid workflow patch decision payload: {err}"))
 }
 
 fn bridge_store(state: State<'_, Mutex<AppState>>) -> Result<BridgeProposalStore, String> {
@@ -249,6 +308,22 @@ pub(crate) fn execute_bridge_action(
         rejected_ghost_id = Some(ghost_id.to_string());
         Ok(())
     };
+    let mut record_workflow_patch_decision = |workflow_id: &str,
+                                              run_id: &str,
+                                              patch: &WorkflowPatch,
+                                              accepted: bool,
+                                              reason: &str|
+     -> Result<(), String> {
+        let mut ai = ai_state.lock().map_err(|e| e.to_string())?;
+        ai.agent_scheduler.record_workflow_patch_decision(
+            workflow_id,
+            run_id,
+            patch,
+            accepted,
+            reason,
+        );
+        Ok(())
+    };
 
     let result = execute_action_against_store(
         &store,
@@ -257,6 +332,7 @@ pub(crate) fn execute_bridge_action(
         Some(&mut approve_task),
         Some(&mut reject_task),
         Some(&mut reject_ghost),
+        Some(&mut record_workflow_patch_decision),
     )?;
 
     if let Some(task_id) = approved_task_id {
@@ -353,7 +429,7 @@ mod tests {
         store.upsert(sample()).unwrap();
 
         let result =
-            execute_action_against_store(&store, "p1", "archive", None, None, None).unwrap();
+            execute_action_against_store(&store, "p1", "archive", None, None, None, None).unwrap();
 
         assert_eq!(result.status, "success");
         assert_eq!(result.proposal.status, BridgeProposalStatus::Archived);
@@ -373,9 +449,16 @@ mod tests {
         store.upsert(proposal).unwrap();
         let mut approve = |_task_id: &str| Ok(());
 
-        let error =
-            execute_action_against_store(&store, "p1", "approve", Some(&mut approve), None, None)
-                .unwrap_err();
+        let error = execute_action_against_store(
+            &store,
+            "p1",
+            "approve",
+            Some(&mut approve),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
 
         assert!(error.contains("does not match proposal source"));
     }
@@ -395,11 +478,42 @@ mod tests {
         store.upsert(proposal).unwrap();
         let mut approve = |_task_id: &str| Ok(());
 
-        let error =
-            execute_action_against_store(&store, "p1", "approve", Some(&mut approve), None, None)
-                .unwrap_err();
+        let error = execute_action_against_store(
+            &store,
+            "p1",
+            "approve",
+            Some(&mut approve),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
 
         assert!(error.contains("cannot execute action"));
+    }
+
+    #[test]
+    fn approve_task_without_handler_leaves_proposal_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BridgeProposalStore::new(dir.path().join("bridge"));
+        let mut proposal = sample();
+        proposal.actions = vec![ProposalAction {
+            id: "approve".to_string(),
+            label: "Approve".to_string(),
+            kind: ProposalActionKind::ApproveTask,
+            payload: serde_json::json!({ "task_id": "task_1" }),
+        }];
+        store.upsert(proposal).unwrap();
+
+        let error = execute_action_against_store(&store, "p1", "approve", None, None, None, None)
+            .unwrap_err();
+
+        assert!(error.contains("requires an approval handler"));
+        let stored = store
+            .get("p1")
+            .unwrap()
+            .expect("proposal should remain stored");
+        assert_eq!(stored.status, BridgeProposalStatus::Pending);
     }
 
     #[test]
@@ -441,6 +555,7 @@ mod tests {
             None,
             None,
             Some(&mut reject_ghost),
+            None,
         )
         .unwrap();
 
@@ -468,7 +583,8 @@ mod tests {
         store.upsert(proposal).unwrap();
 
         let result =
-            execute_action_against_store(&store, "p1", "open-diff", None, None, None).unwrap();
+            execute_action_against_store(&store, "p1", "open-diff", None, None, None, None)
+                .unwrap();
 
         assert_eq!(result.status, "navigate");
         assert_eq!(result.metadata["effect"], "navigate");
@@ -500,11 +616,180 @@ mod tests {
             Ok(())
         };
 
-        let result =
-            execute_action_against_store(&store, "p1", "approve", Some(&mut approve), None, None)
-                .unwrap();
+        let result = execute_action_against_store(
+            &store,
+            "p1",
+            "approve",
+            Some(&mut approve),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.proposal.status, BridgeProposalStatus::Approved);
         assert_eq!(approved_task_id, "task_1");
+    }
+
+    #[test]
+    fn approve_workflow_patch_records_patch_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BridgeProposalStore::new(dir.path().join("bridge"));
+        let patch = crate::harness::workflow::WorkflowPatch {
+            patch_id: "patch_wf_runtime_v1_to_v2".to_string(),
+            workflow_id: "wf_runtime".to_string(),
+            from_version: 1,
+            to_version: 2,
+            basis: crate::harness::workflow::PatchBasis {
+                failed_steps: vec!["S001".to_string()],
+                failed_goal_clauses: vec![2],
+            },
+            ops: vec![
+                crate::harness::workflow::WorkflowPatchOp::ReplaceStepStatus {
+                    step_id: "S001".to_string(),
+                    status: crate::harness::workflow::WorkflowStepStatus::Pending,
+                },
+            ],
+            rationale: "Retry verifier step after human review.".to_string(),
+            predicted_impact: serde_json::json!({"risk": "low"}),
+        };
+        let mut proposal = sample();
+        proposal.source = BridgeProposalSource::Scheduler;
+        proposal.source_ref = SourceRef {
+            kind: SourceRefKind::SchedulerJob,
+            id: "run_runtime".to_string(),
+            path: Some("wf_runtime".to_string()),
+        };
+        proposal.actions = vec![ProposalAction {
+            id: "approve-patch".to_string(),
+            label: "Approve patch".to_string(),
+            kind: ProposalActionKind::ApproveWorkflowPatch,
+            payload: serde_json::json!({
+                "workflow_id": "wf_runtime",
+                "run_id": "run_runtime",
+                "patch": patch,
+                "reason": "Bridge reviewer accepted the retry surface."
+            }),
+        }];
+        store.upsert(proposal).unwrap();
+        let mut recorded: Option<(String, String, String, bool, String)> = None;
+        let mut record_patch_decision = |workflow_id: &str,
+                                         run_id: &str,
+                                         patch: &crate::harness::workflow::WorkflowPatch,
+                                         accepted: bool,
+                                         reason: &str| {
+            recorded = Some((
+                workflow_id.to_string(),
+                run_id.to_string(),
+                patch.patch_id.clone(),
+                accepted,
+                reason.to_string(),
+            ));
+            Ok(())
+        };
+
+        let result = execute_action_against_store(
+            &store,
+            "p1",
+            "approve-patch",
+            None,
+            None,
+            None,
+            Some(&mut record_patch_decision),
+        )
+        .unwrap();
+
+        assert_eq!(result.proposal.status, BridgeProposalStatus::Approved);
+        assert_eq!(
+            recorded,
+            Some((
+                "wf_runtime".to_string(),
+                "run_runtime".to_string(),
+                "patch_wf_runtime_v1_to_v2".to_string(),
+                true,
+                "Bridge reviewer accepted the retry surface.".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_workflow_patch_records_patch_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BridgeProposalStore::new(dir.path().join("bridge"));
+        let patch = crate::harness::workflow::WorkflowPatch {
+            patch_id: "patch_wf_runtime_v1_to_v2".to_string(),
+            workflow_id: "wf_runtime".to_string(),
+            from_version: 1,
+            to_version: 2,
+            basis: crate::harness::workflow::PatchBasis {
+                failed_steps: vec!["S001".to_string()],
+                failed_goal_clauses: vec![2],
+            },
+            ops: vec![
+                crate::harness::workflow::WorkflowPatchOp::ReplaceStepStatus {
+                    step_id: "S001".to_string(),
+                    status: crate::harness::workflow::WorkflowStepStatus::Pending,
+                },
+            ],
+            rationale: "Retry verifier step after human review.".to_string(),
+            predicted_impact: serde_json::json!({"risk": "medium"}),
+        };
+        let mut proposal = sample();
+        proposal.source = BridgeProposalSource::Scheduler;
+        proposal.source_ref = SourceRef {
+            kind: SourceRefKind::SchedulerJob,
+            id: "run_runtime".to_string(),
+            path: Some("wf_runtime".to_string()),
+        };
+        proposal.actions = vec![ProposalAction {
+            id: "reject-patch".to_string(),
+            label: "Reject patch".to_string(),
+            kind: ProposalActionKind::RejectWorkflowPatch,
+            payload: serde_json::json!({
+                "workflow_id": "wf_runtime",
+                "run_id": "run_runtime",
+                "patch": patch,
+                "reason": "Patch needs a smaller retry surface."
+            }),
+        }];
+        store.upsert(proposal).unwrap();
+        let mut recorded: Option<(String, String, String, bool, String)> = None;
+        let mut record_patch_decision = |workflow_id: &str,
+                                         run_id: &str,
+                                         patch: &crate::harness::workflow::WorkflowPatch,
+                                         accepted: bool,
+                                         reason: &str| {
+            recorded = Some((
+                workflow_id.to_string(),
+                run_id.to_string(),
+                patch.patch_id.clone(),
+                accepted,
+                reason.to_string(),
+            ));
+            Ok(())
+        };
+
+        let result = execute_action_against_store(
+            &store,
+            "p1",
+            "reject-patch",
+            None,
+            None,
+            None,
+            Some(&mut record_patch_decision),
+        )
+        .unwrap();
+
+        assert_eq!(result.proposal.status, BridgeProposalStatus::Rejected);
+        assert_eq!(
+            recorded,
+            Some((
+                "wf_runtime".to_string(),
+                "run_runtime".to_string(),
+                "patch_wf_runtime_v1_to_v2".to_string(),
+                false,
+                "Patch needs a smaller retry surface.".to_string()
+            ))
+        );
     }
 }

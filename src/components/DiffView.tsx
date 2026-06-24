@@ -6,34 +6,6 @@ interface DiffViewProps {
   isTauri: boolean;
 }
 
-const MOCK_DIFF_BLOCKS: DiffBlock[] = [
-  {
-    ghostId: "mock",
-    id: "diff-1",
-    type: "inserted",
-    newText: "Rust's ownership system prevents data races at compile time by enforcing strict borrowing rules.",
-    accepted: false,
-    rejected: false,
-  },
-  {
-    ghostId: "mock",
-    id: "diff-2",
-    type: "modified",
-    oldText: "Tauri is an Electron alternative.",
-    newText: "Tauri is a lightweight framework for building desktop apps with web frontends and a Rust backend, consuming 10x less memory than Electron.",
-    accepted: false,
-    rejected: false,
-  },
-  {
-    ghostId: "mock",
-    id: "diff-3",
-    type: "deleted",
-    oldText: "This paragraph is redundant since the concept is already explained elsewhere.",
-    accepted: false,
-    rejected: false,
-  },
-];
-
 type ViewMode = "unified" | "side-by-side";
 
 function getLineColor(type: DiffBlock["type"], isOld: boolean): string | null {
@@ -58,6 +30,17 @@ function getLinePrefix(type: DiffBlock["type"], isOld: boolean): string {
   return " ";
 }
 
+function mergeDiffBlocks(localBlocks: DiffBlock[], backendBlocks: DiffBlock[]): DiffBlock[] {
+  if (backendBlocks.length === 0) {
+    return localBlocks;
+  }
+  const backendIds = new Set(backendBlocks.map((block) => block.id));
+  return [
+    ...localBlocks.filter((block) => !backendIds.has(block.id)),
+    ...backendBlocks,
+  ];
+}
+
 export default function DiffView({ isTauri }: DiffViewProps) {
   const [activeTab, setActiveTab] = useState<"pending" | "history">("pending");
   const [viewMode, setViewMode] = useState<ViewMode>("unified");
@@ -72,13 +55,10 @@ export default function DiffView({ isTauri }: DiffViewProps) {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           const blocks = await invoke<DiffBlock[]>("get_diff_blocks");
-          setDiffBlocks(blocks);
+          setDiffBlocks(mergeDiffBlocks(useAppStore.getState().diffBlocks, blocks ?? []));
         } catch (e) {
           console.error("Failed to load diff data:", e);
-          setDiffBlocks(MOCK_DIFF_BLOCKS);
         }
-      } else {
-        setDiffBlocks(MOCK_DIFF_BLOCKS);
       }
     };
     loadDiffData();
@@ -171,13 +151,13 @@ export default function DiffView({ isTauri }: DiffViewProps) {
             className={`diff-tab-btn ${activeTab === "pending" ? "diff-tab-active" : ""}`}
             onClick={() => setActiveTab("pending")}
           >
-            Pending {pendingCount > 0 && <span className="diff-count-badge">{pendingCount}</span>}
+            待处理 {pendingCount > 0 && <span className="diff-count-badge">{pendingCount}</span>}
           </button>
           <button
             className={`diff-tab-btn ${activeTab === "history" ? "diff-tab-active" : ""}`}
             onClick={() => setActiveTab("history")}
           >
-            History {acceptedCount + rejectedCount > 0 && <span className="diff-count-badge">{acceptedCount + rejectedCount}</span>}
+            历史 {acceptedCount + rejectedCount > 0 && <span className="diff-count-badge">{acceptedCount + rejectedCount}</span>}
           </button>
         </div>
         <div className="diff-header-right">
@@ -185,14 +165,14 @@ export default function DiffView({ isTauri }: DiffViewProps) {
             <button
               className={`diff-view-btn ${viewMode === "unified" ? "diff-view-active" : ""}`}
               onClick={() => setViewMode("unified")}
-              title="Unified view"
+              title="统一视图"
             >
               <FeroHaIcon name="AlignJustify" size={14} />
             </button>
             <button
               className={`diff-view-btn ${viewMode === "side-by-side" ? "diff-view-active" : ""}`}
               onClick={() => setViewMode("side-by-side")}
-              title="Side-by-side view"
+              title="并排视图"
             >
               <FeroHaIcon name="Columns2" size={14} />
             </button>
@@ -202,25 +182,39 @@ export default function DiffView({ isTauri }: DiffViewProps) {
               <button className="diff-accept-all-btn" onClick={() => {
                 pendingBlocks.forEach((b) => { handleAccept(b); });
               }}>
-                <FeroHaIcon name="Check" size={12} /> Accept All
+                <FeroHaIcon name="Check" size={12} /> 全部采纳
               </button>
               <button className="diff-reject-all-btn" onClick={() => {
                 pendingBlocks.forEach((b) => { handleReject(b); });
               }}>
-                <FeroHaIcon name="X" size={12} /> Reject All
+                <FeroHaIcon name="X" size={12} /> 全部拒绝
               </button>
             </div>
           )}
         </div>
       </div>
 
+      <div className="diff-feedback-boundary" role="note">
+        采纳仅记录对 AI 建议的反馈，不会修改人类笔记正文。
+      </div>
+
       <div className="diff-list">
-        {activeTab === "pending" && pendingCount === 0 && (
-          <div className="diff-empty">
-            <FeroHaIcon name="CheckCircle2" size={36} />
-            <p className="diff-empty-title">No pending suggestions</p>
+        {!isTauri && diffBlocks.length === 0 && activeTab === "pending" && (
+          <div className="diff-empty diff-preview-empty">
+            <FeroHaIcon name="Search" size={36} />
+            <p className="diff-empty-title">浏览器预览无法读取真实差异</p>
             <p className="diff-empty-hint">
-              Use <code>/agent</code> commands or instruction cards to generate AI suggestions
+              Diff Review 只处理已经形成 ghost/text block 的具体文本改动；上游通常来自 Bridge 提案。
+            </p>
+          </div>
+        )}
+
+        {activeTab === "pending" && pendingCount === 0 && (
+          <div className="diff-empty" hidden={!isTauri && diffBlocks.length === 0}>
+            <FeroHaIcon name="CircleCheck" size={36} />
+            <p className="diff-empty-title">暂无待处理建议</p>
+            <p className="diff-empty-hint">
+              使用 <code>/agent</code> 指令或指令卡生成 AI 建议
             </p>
           </div>
         )}
@@ -228,17 +222,7 @@ export default function DiffView({ isTauri }: DiffViewProps) {
         {activeTab === "history" && historyBlocks.length === 0 && (
           <div className="diff-empty">
             <FeroHaIcon name="List" size={36} />
-            <p className="diff-empty-title">No review history</p>
-          </div>
-        )}
-
-        {diffBlocks.length === 0 && activeTab === "pending" && !isTauri && (
-          <div className="diff-empty">
-            <FeroHaIcon name="Search" size={36} />
-            <p className="diff-empty-title">Diff panel displays AI modification suggestions</p>
-            <p className="diff-empty-hint">
-              Accept or reject suggestions to incorporate them into notes
-            </p>
+            <p className="diff-empty-title">暂无审查历史</p>
           </div>
         )}
 
@@ -284,9 +268,9 @@ function DiffBlockCard({
   const oldLines = (block.oldText ?? "").split("\n");
   const newLines = (block.newText ?? "").split("\n");
 
-  const typeLabel = block.type === "inserted" ? "Inserted"
-    : block.type === "deleted" ? "Deleted"
-    : "Modified";
+  const typeLabel = block.type === "inserted" ? "新增"
+    : block.type === "deleted" ? "删除"
+    : "修改";
   const typeColor = block.type === "inserted" ? "var(--diff-insert)"
     : block.type === "deleted" ? "var(--diff-delete)"
     : "var(--diff-modify)";
@@ -321,11 +305,11 @@ function DiffBlockCard({
     content = (
       <div className="diff-side-by-side">
         <div className="diff-side-left">
-          <div className="diff-side-label">Old</div>
+          <div className="diff-side-label">原文</div>
           {renderLines(oldLines, true)}
         </div>
         <div className="diff-side-right">
-          <div className="diff-side-label">New</div>
+          <div className="diff-side-label">新文</div>
           {renderLines(newLines, false)}
         </div>
       </div>
@@ -337,7 +321,7 @@ function DiffBlockCard({
           <div className="diff-side-label">&nbsp;</div>
         </div>
         <div className="diff-side-right">
-          <div className="diff-side-label">New</div>
+          <div className="diff-side-label">新文</div>
           {renderLines(newLines, false)}
         </div>
       </div>
@@ -346,7 +330,7 @@ function DiffBlockCard({
     content = (
       <div className="diff-side-by-side">
         <div className="diff-side-left">
-          <div className="diff-side-label">Old</div>
+          <div className="diff-side-label">原文</div>
           {renderLines(oldLines, true)}
         </div>
         <div className="diff-side-right diff-side-empty">
@@ -360,7 +344,7 @@ function DiffBlockCard({
         {block.oldText && (block.type === "deleted" || block.type === "modified") && (
           <div className="diff-section">
             <div className="diff-section-label" style={{ color: "var(--diff-delete)" }}>
-              — Removing:
+              - 移除：
             </div>
             {renderLines(oldLines, true, (block.type === "modified") ? "-" : "-")}
           </div>
@@ -368,7 +352,7 @@ function DiffBlockCard({
         {block.newText && (block.type === "inserted" || block.type === "modified") && (
           <div className="diff-section">
             <div className="diff-section-label" style={{ color: "var(--diff-insert)" }}>
-              + Adding:
+              + 添加：
             </div>
             {renderLines(newLines, false, (block.type === "modified") ? "+" : "+")}
           </div>
@@ -396,12 +380,12 @@ function DiffBlockCard({
         <div className="diff-card-header-right">
           {isAccepted && (
             <span className="diff-status-label diff-status-accepted">
-              <FeroHaIcon name="Check" size={10} /> Accepted
+              <FeroHaIcon name="Check" size={10} /> 已采纳
             </span>
           )}
           {isRejected && (
             <span className="diff-status-label diff-status-rejected">
-              <FeroHaIcon name="X" size={10} /> Rejected
+              <FeroHaIcon name="X" size={10} /> 已拒绝
             </span>
           )}
         </div>
@@ -412,10 +396,10 @@ function DiffBlockCard({
       {!readOnly && (
         <div className="diff-card-actions">
           <button className="diff-accept-btn" onClick={(e) => { e.stopPropagation(); onAccept?.(); }}>
-            <FeroHaIcon name="Check" size={14} /> Accept
+            <FeroHaIcon name="Check" size={14} /> 采纳反馈
           </button>
           <button className="diff-reject-btn" onClick={(e) => { e.stopPropagation(); onReject?.(); }}>
-            <FeroHaIcon name="X" size={14} /> Reject
+            <FeroHaIcon name="X" size={14} /> 拒绝
           </button>
         </div>
       )}
@@ -433,6 +417,11 @@ const diffViewCSS = `
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  padding: 14px 18px;
+  box-sizing: border-box;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 /* Header */
@@ -566,6 +555,19 @@ const diffViewCSS = `
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+  padding-bottom: 12px;
+}
+
+.diff-feedback-boundary {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* Diff Card */
@@ -615,6 +617,7 @@ const diffViewCSS = `
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .diff-card-header-right {
@@ -825,5 +828,41 @@ const diffViewCSS = `
   border-radius: 3px;
   font-family: var(--font-mono, monospace);
   font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  .diff-view-container {
+    padding: 12px;
+  }
+
+  .diff-header,
+  .diff-header-right,
+  .diff-bulk-actions {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .diff-header-right {
+    flex-wrap: wrap;
+  }
+
+  .diff-side-by-side {
+    flex-direction: column;
+  }
+
+  .diff-side-left {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .diff-card-header {
+    align-items: flex-start;
+    gap: 8px;
+    flex-direction: column;
+  }
+
+  .diff-card-actions {
+    flex-wrap: wrap;
+  }
 }
 `;

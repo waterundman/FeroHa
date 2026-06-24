@@ -1,0 +1,116 @@
+[
+  {
+    "id": "bridge_3297059d87ea4691b6262552d96fbd95",
+    "intent": "用 DeepSeek 分析 seed 笔记的贝叶斯更新要点",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "research",
+    "sandbox_summary": "tools=[search,analyze,deep_research,vector_search,fulltext_search,web_search,arxiv_search,semantic_scholar_search,llm_complete]; reads=.; writes=read-only; network=Allowed; bridge=true",
+    "expected_output": "research brief with sources",
+    "risk_reason": "uses research tools and may use network sources",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_164174f0ccc34c0099b7fa19b8dbab70"
+    },
+    "status": "approved",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_164174f0ccc34c0099b7fa19b8dbab70",
+        "excerpt": "用 DeepSeek 分析 seed 笔记的贝叶斯更新要点"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_164174f0ccc34c0099b7fa19b8dbab70"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_164174f0ccc34c0099b7fa19b8dbab70"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781607226335,
+    "updated_at": 1781607288699
+  },
+  {
+    "id": "bridge_6c0af4933d574c409d27929cf14ec184",
+    "intent": "分析 seed 笔记的桌面通路验证",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "research",
+    "sandbox_summary": "tools=[search,analyze,deep_research,vector_search,fulltext_search,web_search,arxiv_search,semantic_scholar_search,llm_complete]; reads=.; writes=read-only; network=Allowed; bridge=true",
+    "expected_output": "research brief with sources",
+    "risk_reason": "uses research tools and may use network sources",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_c5cbf47d137a4f8a88104413cff99838"
+    },
+    "status": "approved",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_c5cbf47d137a4f8a88104413cff99838",
+        "excerpt": "分析 seed 笔记的桌面通路验证"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_c5cbf47d137a4f8a88104413cff99838"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_c5cbf47d137a4f8a88104413cff99838"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781716186369,
+    "updated_at": 1781716251318
+  }
+]

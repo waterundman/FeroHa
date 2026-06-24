@@ -96,7 +96,7 @@ impl VaultManager {
         let mut file = fs::File::create(&temp_path)?;
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temp_path, &full_path)?;
+        replace_file(&temp_path, &full_path)?;
 
         // Update cache
         let relative = safe_path.to_string_lossy().replace('\\', "/");
@@ -144,7 +144,8 @@ impl VaultManager {
 
     /// Save binary asset (e.g. pasted image) to vault
     pub fn save_asset(&self, relative_path: &str, content: &[u8]) -> Result<(), VaultError> {
-        let full_path = self.root_path.join(relative_path);
+        let safe_path = normalize_relative_path(Path::new(relative_path))?;
+        let full_path = self.root_path.join(safe_path);
         if let Some(parent) = full_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -152,7 +153,7 @@ impl VaultManager {
         let mut file = fs::File::create(&temp_path)?;
         file.write_all(content)?;
         file.sync_all()?;
-        fs::rename(&temp_path, &full_path)?;
+        replace_file(&temp_path, &full_path)?;
         Ok(())
     }
 
@@ -178,8 +179,10 @@ impl VaultManager {
 
     /// Rename a note (move/rename file)
     pub fn rename_note(&self, old_path: &str, new_path: &str) -> Result<(), String> {
-        let old_full = self.root_path.join(old_path);
-        let new_full = self.root_path.join(new_path);
+        let old_safe = normalize_relative_path(Path::new(old_path)).map_err(|e| e.to_string())?;
+        let new_safe = normalize_relative_path(Path::new(new_path)).map_err(|e| e.to_string())?;
+        let old_full = self.root_path.join(&old_safe);
+        let new_full = self.root_path.join(&new_safe);
 
         if !old_full.exists() {
             return Err(format!("File not found: {}", old_path));
@@ -289,6 +292,18 @@ fn normalize_relative_path(path: &Path) -> Result<PathBuf, VaultError> {
     Ok(normalized)
 }
 
+fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), VaultError> {
+    match fs::rename(temp_path, target_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && target_path.exists() => {
+            fs::remove_file(target_path)?;
+            fs::rename(temp_path, target_path)?;
+            Ok(())
+        }
+        Err(error) => Err(VaultError::Io(error)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +340,28 @@ mod tests {
     }
 
     #[test]
+    fn test_write_note_overwrites_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let vault = VaultManager::open(dir.path()).unwrap();
+
+        vault.write_note("test.md", "first").unwrap();
+        vault.write_note("test.md", "second").unwrap();
+
+        assert_eq!(vault.read_note("test.md").unwrap(), "second");
+    }
+
+    #[test]
+    fn test_save_asset_overwrites_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let vault = VaultManager::open(dir.path()).unwrap();
+
+        vault.save_asset("asset.bin", b"first").unwrap();
+        vault.save_asset("asset.bin", b"second").unwrap();
+
+        assert_eq!(fs::read(dir.path().join("asset.bin")).unwrap(), b"second");
+    }
+
+    #[test]
     fn test_rejects_path_traversal() {
         let dir = TempDir::new().unwrap();
         let vault = VaultManager::open(dir.path()).unwrap();
@@ -342,5 +379,30 @@ mod tests {
         vault.create_folder("nested/folder").unwrap();
         assert!(dir.path().join("nested").join("folder").is_dir());
         assert!(vault.create_folder("../outside").is_err());
+    }
+
+    #[test]
+    fn test_save_asset_rejects_path_traversal() {
+        let dir = TempDir::new().unwrap();
+        let vault_dir = dir.path().join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let vault = VaultManager::open(&vault_dir).unwrap();
+
+        assert!(vault.save_asset("../outside.bin", b"nope").is_err());
+        assert!(!dir.path().join("outside.bin").exists());
+    }
+
+    #[test]
+    fn test_rename_note_rejects_path_traversal() {
+        let dir = TempDir::new().unwrap();
+        let vault_dir = dir.path().join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let vault = VaultManager::open(&vault_dir).unwrap();
+
+        vault.write_note("inside.md", "# Inside").unwrap();
+
+        assert!(vault.rename_note("inside.md", "../outside.md").is_err());
+        assert!(vault.read_note("inside.md").is_ok());
+        assert!(!dir.path().join("outside.md").exists());
     }
 }

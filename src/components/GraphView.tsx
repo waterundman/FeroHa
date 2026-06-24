@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3-force";
 import { useAppStore, type GraphData, type GraphEdgeType } from "../hooks/useAppStore";
 import FeroHaIcon from "./FeroHaIcon";
+import "./GraphView.css";
 
 interface SimNode extends d3.SimulationNodeDatum {
   id: string;
@@ -16,6 +17,7 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   edgeType: GraphEdgeType;
   origin: string;
   confidence: number;
+  memoryRegion: GraphMemoryRegion;
 }
 
 export interface GraphEdgeStyle {
@@ -23,26 +25,245 @@ export interface GraphEdgeStyle {
   width: number;
   alpha: number;
   tone: "default" | "accent" | "muted";
+  memoryRegion: GraphMemoryRegion;
+  color: string;
+  animationSpeed: number;
 }
 
-export function styleForGraphEdge(edgeType?: GraphEdgeType): GraphEdgeStyle {
+type GraphEdgeLike = {
+  from?: string;
+  to?: string;
+  edge_type?: GraphEdgeType;
+  origin?: string;
+  memory_region?: string;
+};
+
+export type GraphEdgeCategory = "wikilink" | "structure" | "dream";
+export type GraphMemoryRegion = "working" | "semantic" | "long_term" | "bridge";
+export type GraphViewMode = "focus" | "three-zone";
+
+export type GraphEdgeCategoryState = Record<GraphEdgeCategory, boolean>;
+
+export interface MemoryRegionVisualPlan {
+  label: string;
+  color: string;
+  animationSpeed: number;
+  role: "memory_zone" | "cross_zone_link";
+}
+
+type DemoGraphNode = Pick<SimNode, "id" | "title" | "outgoing" | "incoming">;
+type DemoGraphEdge = {
+  from: string;
+  to: string;
+  edgeType: GraphEdgeType;
+  origin: string;
+  confidence: number;
+  memoryRegion: GraphMemoryRegion;
+};
+
+const defaultEdgeFilters: GraphEdgeCategoryState = {
+  wikilink: true,
+  structure: true,
+  dream: true,
+};
+
+const demoGraphNodes: DemoGraphNode[] = [
+  { id: "welcome", title: "欢迎", outgoing: 2, incoming: 0 },
+  { id: "architecture", title: "系统架构", outgoing: 1, incoming: 1 },
+  { id: "dual-track", title: "本地工作流", outgoing: 2, incoming: 2 },
+  { id: "llm", title: "LLM 内部", outgoing: 0, incoming: 1 },
+  { id: "rust", title: "Rust 后端", outgoing: 1, incoming: 0 },
+];
+
+const demoGraphEdges: DemoGraphEdge[] = [
+  { from: "welcome", to: "architecture", edgeType: "reference", origin: "demo", confidence: 1, memoryRegion: "working" },
+  { from: "architecture", to: "dual-track", edgeType: "parent", origin: "demo", confidence: 1, memoryRegion: "semantic" },
+  { from: "dual-track", to: "llm", edgeType: "related", origin: "demo", confidence: 1, memoryRegion: "long_term" },
+  { from: "welcome", to: "rust", edgeType: "bridge", origin: "demo", confidence: 1, memoryRegion: "bridge" },
+];
+
+export function graphManagerCaption(): string {
+  return "AI Manager 知识图谱";
+}
+
+export function graphViewModeOptions(): Array<{ value: GraphViewMode; label: string; title: string }> {
+  return [
+    { value: "focus", label: "聚焦", title: "只显示焦点、直接邻居和跨区桥" },
+    { value: "three-zone", label: "Dream 三区", title: "显示工作、结构语义、长期三类记忆" },
+  ];
+}
+
+export function graphMemoryLegendRegions(): GraphMemoryRegion[] {
+  return ["working", "semantic", "long_term", "bridge"];
+}
+
+export function graphDisplaySummaryCounts(graph: Pick<GraphData, "nodes" | "edges">): { nodes: number; edges: number } {
+  const edgePlan = graphEdgeDisplayPlan(graph.edges, defaultEdgeFilters);
+  return {
+    nodes: graph.nodes.length === 0 ? demoGraphNodes.length : graph.nodes.length,
+    edges: edgePlan.useDemo ? demoGraphEdges.length : graph.edges.length,
+  };
+}
+
+const dreamZoneVisualPlans: Record<GraphMemoryRegion, MemoryRegionVisualPlan> = {
+  working: {
+    label: "工作记忆",
+    color: "#94e2d5",
+    animationSpeed: 0.65,
+    role: "memory_zone",
+  },
+  semantic: {
+    label: "结构语义",
+    color: "#cba6f7",
+    animationSpeed: 0.22,
+    role: "memory_zone",
+  },
+  long_term: {
+    label: "长期记忆",
+    color: "#a6adc8",
+    animationSpeed: 0.08,
+    role: "memory_zone",
+  },
+  bridge: {
+    label: "跨区连接",
+    color: "#f9e2af",
+    animationSpeed: 1.05,
+    role: "cross_zone_link",
+  },
+};
+
+export function graphEdgeCategoryLabel(category: GraphEdgeCategory): string {
+  switch (category) {
+    case "wikilink":
+      return "Wiki 双链";
+    case "structure":
+      return "结构语义";
+    case "dream":
+      return "Dream 记忆";
+  }
+}
+
+export function graphEdgeCategoryTitle(category: GraphEdgeCategory, enabled: boolean): string {
+  return `${enabled ? "隐藏" : "显示"} ${graphEdgeCategoryLabel(category)}连接`;
+}
+
+export function memoryRegionVisualPlan(region: GraphMemoryRegion): MemoryRegionVisualPlan {
+  return dreamZoneVisualPlans[region];
+}
+
+function normalizeMemoryRegion(value?: string): GraphMemoryRegion | null {
+  const normalized = value?.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (!normalized) return null;
+  if (["core", "structure", "structural", "jsonld", "tree", "semantic_core"].includes(normalized)) {
+    return "semantic";
+  }
+  if (["working", "work", "hot", "wikilink", "human", "scratch", "temporal"].includes(normalized)) {
+    return "working";
+  }
+  if (["dream", "rem", "semantic", "memory_dream"].includes(normalized)) {
+    return "semantic";
+  }
+  if (["archive", "cold", "cold_archive", "storage", "source", "long_term", "longterm"].includes(normalized)) {
+    return "long_term";
+  }
+  if (["bridge", "dream_bridge", "cross_region", "cross"].includes(normalized)) {
+    return "bridge";
+  }
+  return null;
+}
+
+export function graphMemoryRegion(edge: GraphEdgeLike): GraphMemoryRegion {
+  const explicit = normalizeMemoryRegion(edge.memory_region);
+  if (explicit) return explicit;
+
+  const origin = edge.origin?.toLowerCase();
+  const edgeType = edge.edge_type ?? "reference";
+  if (edgeType === "bridge") return "bridge";
+  if (origin === "dream" && edgeType === "temporal") return "working";
+  if (edgeType === "temporal") return "working";
+  if (origin === "dream" || edgeType === "semantic") return "semantic";
+  if (origin === "archive" || origin === "cold" || edgeType === "source") return "long_term";
+  if (
+    origin === "frontmatter" ||
+    origin === "jsonld" ||
+    origin === "legacy_frontmatter" ||
+    origin === "mdt" ||
+    edgeType === "parent" ||
+    edgeType === "related" ||
+    edgeType === "sequence"
+  ) {
+    return "semantic";
+  }
+  return "working";
+}
+
+export function graphEdgeCategory(edge: GraphEdgeLike): GraphEdgeCategory {
+  const origin = edge.origin?.toLowerCase();
+  const edgeType = edge.edge_type ?? "reference";
+  if (origin === "dream" || edgeType === "semantic" || edgeType === "temporal" || edgeType === "bridge") {
+    return "dream";
+  }
+  if (
+    origin === "frontmatter" ||
+    origin === "jsonld" ||
+    origin === "legacy_frontmatter" ||
+    origin === "mdt" ||
+    edgeType === "parent" ||
+    edgeType === "related" ||
+    edgeType === "source" ||
+    edgeType === "sequence"
+  ) {
+    return "structure";
+  }
+  return "wikilink";
+}
+
+export function filterGraphEdgesByCategory<T extends GraphEdgeLike>(
+  edges: T[],
+  enabled: GraphEdgeCategoryState,
+): T[] {
+  return edges.filter((edge) => enabled[graphEdgeCategory(edge)]);
+}
+
+export function graphEdgeDisplayPlan<T extends GraphEdgeLike>(
+  edges: T[],
+  enabled: GraphEdgeCategoryState,
+): { edges: T[]; useDemo: boolean } {
+  return {
+    edges: filterGraphEdgesByCategory(edges, enabled),
+    useDemo: edges.length === 0,
+  };
+}
+
+export function filterGraphEdgesByViewMode<T extends GraphEdgeLike>(
+  edges: T[],
+  mode: GraphViewMode,
+  focusNodeId?: string,
+): T[] {
+  if (mode !== "focus" || !focusNodeId) return edges;
+  return edges.filter((edge) => edge.from === focusNodeId || edge.to === focusNodeId || graphMemoryRegion(edge) === "bridge");
+}
+
+export function styleForGraphEdge(edgeType?: GraphEdgeType, memoryRegion?: string): GraphEdgeStyle {
+  const region = normalizeMemoryRegion(memoryRegion) ?? graphMemoryRegion({ edge_type: edgeType });
+  const visual = memoryRegionVisualPlan(region);
   switch (edgeType ?? "reference") {
     case "parent":
-      return { dash: [], width: 1.8, alpha: 0.85, tone: "default" };
+      return { dash: [], width: 1.8, alpha: 0.85, tone: "default", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "reference":
-      return { dash: [6, 4], width: 1.2, alpha: 0.7, tone: "default" };
+      return { dash: [6, 4], width: 1.2, alpha: 0.7, tone: "default", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "related":
-      return { dash: [2, 5], width: 1, alpha: 0.55, tone: "muted" };
+      return { dash: [2, 5], width: 1, alpha: 0.55, tone: "muted", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "source":
-      return { dash: [8, 4], width: 1.4, alpha: 0.8, tone: "default" };
+      return { dash: [8, 4], width: 1.4, alpha: 0.8, tone: "default", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "sequence":
-      return { dash: [10, 4], width: 1.2, alpha: 0.75, tone: "default" };
+      return { dash: [10, 4], width: 1.2, alpha: 0.75, tone: "default", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "semantic":
-      return { dash: [], width: 0.8, alpha: 0.32, tone: "muted" };
+      return { dash: [], width: 0.8, alpha: 0.32, tone: "muted", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "temporal":
-      return { dash: [3, 3], width: 0.9, alpha: 0.42, tone: "muted" };
+      return { dash: [3, 3], width: 0.9, alpha: 0.42, tone: "muted", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
     case "bridge":
-      return { dash: [], width: 2.2, alpha: 0.9, tone: "accent" };
+      return { dash: [], width: 2.2, alpha: 0.9, tone: "accent", memoryRegion: region, color: visual.color, animationSpeed: visual.animationSpeed };
   }
 }
 
@@ -74,6 +295,8 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
   const clearNavigationPath = useAppStore((s) => s.clearNavigationPath);
   const navigationPath = useAppStore((s) => s.navigationPath);
   const [searchQuery, setSearchQuery] = useState("");
+  const [edgeFilters] = useState<GraphEdgeCategoryState>(defaultEdgeFilters);
+  const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>("focus");
 
   // Reload graph with focus data when focusNotePath changes
   useEffect(() => {
@@ -150,14 +373,7 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
 
     // If only demo data, add more visible nodes
     if (nodes.length === 0) {
-      const demoNodes = [
-        { id: "welcome", title: "Welcome", outgoing: 2, incoming: 0 },
-        { id: "architecture", title: "Architecture", outgoing: 1, incoming: 1 },
-        { id: "dual-track", title: "Dual Track", outgoing: 2, incoming: 2 },
-        { id: "llm", title: "LLM Internals", outgoing: 0, incoming: 1 },
-        { id: "rust", title: "Rust", outgoing: 1, incoming: 0 },
-      ];
-      demoNodes.forEach((n) => {
+      demoGraphNodes.forEach((n) => {
         const simNode: SimNode = { ...n, radius: 8 };
         nodeMap.set(n.id, simNode);
         nodes.push(simNode);
@@ -166,8 +382,10 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
 
     // Build links
     let links: SimLink[] = [];
-    if (graph.edges.length > 0) {
-      links = graph.edges
+    const edgePlan = graphEdgeDisplayPlan(graph.edges, edgeFilters);
+    const displayEdges = filterGraphEdgesByViewMode(edgePlan.edges, graphViewMode, focusNotePath);
+    if (!edgePlan.useDemo) {
+      links = displayEdges
         .map((e) => {
           const source = nodeMap.get(e.from);
           const target = nodeMap.get(e.to);
@@ -178,24 +396,26 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
                 edgeType: e.edge_type ?? "reference",
                 origin: e.origin ?? "wikilink",
                 confidence: e.confidence ?? 1,
+                memoryRegion: graphMemoryRegion(e),
               }
             : null;
         })
         .filter(Boolean) as SimLink[];
     } else {
-      // Demo links
-      if (nodeMap.has("welcome") && nodeMap.has("architecture")) {
-        links.push({ source: nodeMap.get("welcome")!, target: nodeMap.get("architecture")!, edgeType: "reference", origin: "demo", confidence: 1 });
-      }
-      if (nodeMap.has("architecture") && nodeMap.has("dual-track")) {
-        links.push({ source: nodeMap.get("architecture")!, target: nodeMap.get("dual-track")!, edgeType: "parent", origin: "demo", confidence: 1 });
-      }
-      if (nodeMap.has("dual-track") && nodeMap.has("llm")) {
-        links.push({ source: nodeMap.get("dual-track")!, target: nodeMap.get("llm")!, edgeType: "related", origin: "demo", confidence: 1 });
-      }
-      if (nodeMap.has("welcome") && nodeMap.has("rust")) {
-        links.push({ source: nodeMap.get("welcome")!, target: nodeMap.get("rust")!, edgeType: "bridge", origin: "demo", confidence: 1 });
-      }
+      demoGraphEdges.forEach((edge) => {
+        const source = nodeMap.get(edge.from);
+        const target = nodeMap.get(edge.to);
+        if (source && target) {
+          links.push({
+            source,
+            target,
+            edgeType: edge.edgeType,
+            origin: edge.origin,
+            confidence: edge.confidence,
+            memoryRegion: edge.memoryRegion,
+          });
+        }
+      });
     }
 
     // Simulation
@@ -230,6 +450,7 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
     let dragStartMouseX = 0;
     let dragStartMouseY = 0;
     let dragTotalDistance = 0;
+    let requestRender: () => void = () => undefined;
 
     const handleMouseDown = (e: MouseEvent) => {
       if (hoveredNode) {
@@ -246,6 +467,7 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
         panStartY = e.clientY;
         panStartTransform = { x: transform.x, y: transform.y };
       }
+      requestRender();
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -277,6 +499,7 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
       } else {
         canvas.style.cursor = "default";
       }
+      requestRender();
     };
 
     const handleMouseUp = () => {
@@ -288,12 +511,14 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
       isNodeDragging = false;
       dragNode = null;
       isPanning = false;
+      requestRender();
     };
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       transform.scale = Math.max(0.2, Math.min(5, transform.scale * delta));
+      requestRender();
     };
 
     const handleClick = () => {
@@ -318,10 +543,13 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
     canvas.addEventListener("wheel", handleWheel);
     canvas.addEventListener("click", handleClick);
 
-    // Render loop
-    sim.on("tick", () => {
+    let frameId: number | null = null;
+    let disposed = false;
+
+    const draw = () => {
       const w = canvas.width / window.devicePixelRatio;
       const h = canvas.height / window.devicePixelRatio;
+      const now = Date.now();
 
       ctx.clearRect(0, 0, w, h);
 
@@ -339,16 +567,29 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
         const s = l.source as SimNode;
         const t = l.target as SimNode;
         if (s.x == null || s.y == null || t.x == null || t.y == null) return;
-        const edgeStyle = styleForGraphEdge(l.edgeType);
+        const edgeStyle = styleForGraphEdge(l.edgeType, l.memoryRegion);
+        const confidenceAlpha = edgeStyle.alpha * Math.max(0.1, Math.min(1, l.confidence));
+        const dashOffset = -((now / 120) * edgeStyle.animationSpeed);
         ctx.save();
-        ctx.globalAlpha = edgeStyle.alpha * Math.max(0.1, Math.min(1, l.confidence));
+        if (edgeStyle.animationSpeed >= 0.8) {
+          ctx.globalAlpha = confidenceAlpha * 0.22;
+          ctx.strokeStyle = edgeStyle.color;
+          ctx.lineWidth = edgeStyle.width + 5;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(s.x, s.y);
+          ctx.lineTo(t.x, t.y);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = confidenceAlpha;
         ctx.strokeStyle = edgeStyle.tone === "accent"
-          ? accentPrimary
+          ? edgeStyle.color || accentPrimary
           : edgeStyle.tone === "muted"
-            ? textSecondary
-            : borderColor;
+            ? hexToRgba(edgeStyle.color || textSecondary, 0.78)
+            : edgeStyle.color || borderColor;
         ctx.lineWidth = edgeStyle.width;
         ctx.setLineDash(edgeStyle.dash);
+        ctx.lineDashOffset = dashOffset;
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
         ctx.lineTo(t.x, t.y);
@@ -387,7 +628,6 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
       }
 
       // Nodes
-      const now = Date.now();
       for (const node of nodes) {
         if (node.x == null || node.y == null) continue;
         const isHovered = node === hoveredNode;
@@ -456,9 +696,27 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
       }
 
       ctx.restore();
-    });
+    };
+
+    requestRender = () => {
+      if (!disposed) draw();
+    };
+
+    const animate = () => {
+      if (disposed) return;
+      draw();
+      frameId = window.requestAnimationFrame(animate);
+    };
+
+    // Render loop: keeps animated memory edges and canvas interactions alive after D3 cools.
+    sim.on("tick", requestRender);
+    frameId = window.requestAnimationFrame(animate);
 
     return () => {
+      disposed = true;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
       sim.stop();
       canvas.removeEventListener("mousedown", handleMouseDown);
       canvas.removeEventListener("mousemove", handleMouseMove);
@@ -467,49 +725,74 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
       canvas.removeEventListener("click", handleClick);
       window.removeEventListener("resize", resize);
     };
-  }, [graph, openNote, searchQuery, addToNavigationPath, setActivePanel]);
+  }, [graph, edgeFilters, graphViewMode, focusNotePath, openNote, searchQuery, addToNavigationPath, setActivePanel]);
+
+  const summaryCounts = graphDisplaySummaryCounts(graph);
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <span style={styles.title}>Knowledge Graph</span>
-        <div style={styles.headerActions}>
+    <div className="graph-view-shell" style={styles.container}>
+      <div className="graph-view-header" style={styles.header}>
+        <div style={styles.titleGroup}>
+          <span style={styles.title}>{graphManagerCaption()}</span>
+          <span style={styles.titleMeta}>Dream 三区记忆结构</span>
+        </div>
+        <div className="graph-view-header-actions" style={styles.headerActions}>
           <div style={styles.searchWrapper}>
             <input
               type="text"
-              placeholder="Search nodes..."
+              placeholder="搜索节点..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="graph-search-input"
+              className="graph-search-input feroha-search"
             />
             {searchQuery && (
               <button
+                className="graph-icon-button"
                 style={styles.clearBtn}
-                title="Clear search"
+                title="清除搜索"
                 onClick={() => setSearchQuery("")}
               >
                 <FeroHaIcon name="X" size={12} />
               </button>
             )}
           </div>
-          <button style={styles.exportBtn} title="Export as PNG" onClick={exportPng}>
+          <button className="graph-action-button" style={styles.exportBtn} title="导出为 PNG" onClick={exportPng}>
             <FeroHaIcon name="Download" size={16} />
           </button>
+          <div style={styles.modeSwitch} aria-label="图谱视图模式">
+            {graphViewModeOptions().map((mode) => (
+              <button
+                key={mode.value}
+                type="button"
+                className="graph-legend-toggle"
+                aria-pressed={graphViewMode === mode.value}
+                title={mode.title}
+                style={{
+                  ...styles.modeButton,
+                  ...(graphViewMode === mode.value ? styles.modeButtonActive : {}),
+                }}
+                onClick={() => setGraphViewMode(mode.value)}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
           <span style={styles.stats}>
-            {graph.nodes.length} nodes / {graph.edges.length} edges
+            {summaryCounts.nodes} 节点 / {summaryCounts.edges} 连线
           </span>
         </div>
       </div>
       {navigationPath.length > 0 && (
         <div style={styles.breadcrumbBar}>
           <button
+            className="graph-breadcrumb-clear"
             style={styles.breadcrumbBtn}
-            title="Clear navigation path"
+            title="清除导航路径"
             onClick={() => clearNavigationPath()}
           >
             <FeroHaIcon name="X" size={12} />
           </button>
-          <span style={styles.breadcrumbSep}>Home</span>
+          <span style={styles.breadcrumbRoot}>起点</span>
           {navigationPath.map((p, i) => (
             <span key={p + i} style={styles.breadcrumbItem}>
               <span style={styles.breadcrumbSep}>&gt;</span>
@@ -540,9 +823,17 @@ export default function GraphView({ focusNotePath }: { focusNotePath?: string })
         <canvas ref={canvasRef} style={styles.canvas} />
       </div>
       <div style={styles.legend}>
-        <span>Nodes = Notes</span>
-        <span>Click node to open</span>
-        <span>Drag node to rearrange</span>
+        <div className="graph-memory-legend" style={styles.memoryLegend}>
+          {graphMemoryLegendRegions().map((region) => {
+            const plan = memoryRegionVisualPlan(region);
+            return (
+              <span key={region} style={styles.memoryLegendItem} title={`运动速率 ${plan.animationSpeed}`}>
+                <span style={{ ...styles.memoryLegendDot, backgroundColor: plan.color }} />
+                {plan.label}
+              </span>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -553,59 +844,94 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100%",
+    minWidth: 0,
+    overflow: "hidden",
+    padding: "12px 14px",
+    gap: "10px",
   },
   header: {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "center",
-    padding: "6px 0",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    padding: "0 0 10px",
     borderBottom: "1px solid var(--border-color)",
-    marginBottom: "12px",
-    gap: "8px",
+    gap: "12px",
+  },
+  titleGroup: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+    minWidth: "160px",
   },
   headerActions: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "flex-end",
+    flex: "1 1 340px",
+    flexWrap: "wrap",
     gap: "8px",
+    minWidth: 0,
   },
   searchWrapper: {
     position: "relative" as const,
     display: "flex",
     alignItems: "center",
+    flex: "1 1 260px",
+    minWidth: "190px",
+    maxWidth: "430px",
   },
   clearBtn: {
     position: "absolute" as const,
-    right: "2px",
-    background: "none",
+    right: "6px",
+    background: "transparent",
     border: "none",
     cursor: "pointer",
     color: "var(--text-muted)",
-    padding: "2px",
+    padding: "4px",
     display: "flex",
+    borderRadius: "4px",
   },
   exportBtn: {
-    background: "none",
-    border: "1px solid var(--border-color)",
-    borderRadius: "4px",
+    background: "var(--control-bg)",
+    border: "1px solid var(--control-border)",
+    borderRadius: "6px",
     cursor: "pointer",
     color: "var(--text-secondary)",
-    padding: "4px 6px",
+    padding: "7px 9px",
     display: "flex",
     alignItems: "center",
+    justifyContent: "center",
   },
   title: {
-    fontSize: "14px",
+    fontSize: "16px",
     fontWeight: 600,
     color: "var(--text-primary)",
+    letterSpacing: 0,
+  },
+  titleMeta: {
+    fontSize: "11px",
+    color: "var(--text-muted)",
+    letterSpacing: 0,
   },
   stats: {
     fontSize: "11px",
-    color: "var(--text-muted)",
+    color: "var(--text-secondary)",
+    whiteSpace: "nowrap",
+    border: "1px solid var(--border-muted)",
+    background: "var(--bg-secondary)",
+    borderRadius: "6px",
+    padding: "6px 9px",
   },
   canvasWrapper: {
     flex: 1,
     position: "relative",
-    minHeight: "350px",
+    minHeight: "380px",
+    overflow: "hidden",
+    border: "1px solid var(--border-color)",
+    borderRadius: "8px",
+    background: "var(--bg-primary)",
+    boxShadow: "inset 0 0 0 1px var(--border-muted)",
   },
   canvas: {
     width: "100%",
@@ -613,54 +939,132 @@ const styles: Record<string, React.CSSProperties> = {
   },
   legend: {
     display: "flex",
-    justifyContent: "center",
-    gap: "20px",
-    padding: "8px",
+    justifyContent: "flex-start",
+    flexWrap: "wrap",
+    gap: "8px",
+    padding: "0",
     fontSize: "11px",
     color: "var(--text-muted)",
+  },
+  memoryLegend: {
+    display: "inline-flex",
+    alignItems: "center",
+    flexWrap: "wrap" as const,
+    gap: "6px",
+    marginLeft: "2px",
+    minWidth: 0,
+  },
+  memoryLegendItem: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    minHeight: "26px",
+    border: "1px solid var(--border-muted)",
+    background: "var(--bg-secondary)",
+    borderRadius: "6px",
+    color: "var(--text-secondary)",
+    padding: "4px 8px",
+    fontSize: "11px",
+    whiteSpace: "nowrap" as const,
+  },
+  memoryLegendDot: {
+    width: "7px",
+    height: "7px",
+    borderRadius: "50%",
+    boxShadow: "0 0 0 2px var(--bg-primary)",
+  },
+  legendToggle: {
+    border: "1px solid var(--border-color)",
+    background: "var(--bg-secondary)",
+    color: "var(--text-secondary)",
+    borderRadius: "6px",
+    padding: "6px 10px",
+    cursor: "pointer",
+    fontSize: "12px",
+    lineHeight: 1,
+  },
+  legendToggleActive: {
+    color: "var(--accent-primary)",
+    borderColor: "var(--accent-primary)",
+    background: "var(--accent-glow)",
+  },
+  modeSwitch: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "3px",
+    padding: "2px",
+    border: "1px solid var(--control-border)",
+    borderRadius: "7px",
+    background: "var(--control-bg)",
+  },
+  modeButton: {
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "var(--text-secondary)",
+    borderRadius: "5px",
+    padding: "5px 8px",
+    cursor: "pointer",
+    fontSize: "11px",
+    lineHeight: 1,
+  },
+  modeButtonActive: {
+    color: "var(--accent-primary)",
+    borderColor: "var(--accent-primary)",
+    background: "var(--accent-glow)",
   },
   breadcrumbBar: {
     display: "flex",
     alignItems: "center",
-    gap: "2px",
-    padding: "4px 0",
-    marginBottom: "4px",
-    borderBottom: "1px solid var(--border-color)",
+    gap: "6px",
+    padding: "6px 8px",
+    border: "1px solid var(--border-muted)",
+    borderRadius: "6px",
+    background: "var(--bg-secondary)",
     overflowX: "auto",
     whiteSpace: "nowrap",
     fontSize: "11px",
+    minHeight: "30px",
   },
   breadcrumbBtn: {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "none",
-    border: "1px solid var(--border-color)",
-    borderRadius: "3px",
+    background: "var(--control-bg)",
+    border: "1px solid var(--control-border)",
+    borderRadius: "4px",
     cursor: "pointer",
     color: "var(--text-muted)",
-    padding: "2px 4px",
-    marginRight: "6px",
+    padding: "3px 5px",
     fontSize: "10px",
+  },
+  breadcrumbRoot: {
+    color: "var(--text-muted)",
+    fontSize: "11px",
+    flex: "0 0 auto",
   },
   breadcrumbSep: {
     color: "var(--text-muted)",
-    padding: "0 2px",
+    padding: "0",
     fontSize: "10px",
   },
   breadcrumbItem: {
     display: "inline-flex",
     alignItems: "center",
-    gap: "0",
+    gap: "6px",
+    minWidth: 0,
   },
   breadcrumbLink: {
-    background: "none",
+    background: "transparent",
     border: "none",
     cursor: "pointer",
     color: "var(--accent-primary)",
     fontSize: "11px",
-    padding: "1px 3px",
-    borderRadius: "2px",
+    padding: "2px 4px",
+    borderRadius: "4px",
     textDecoration: "none",
+    maxWidth: "180px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
 };

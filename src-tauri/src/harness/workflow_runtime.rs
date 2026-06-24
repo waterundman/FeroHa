@@ -1,6 +1,6 @@
 use crate::harness::workflow::{
-    safe_runtime_component, AgentRegistry, GoalContract, WorkflowError, WorkflowIr,
-    WorkflowRunState, WorkflowRuntimeEventStore,
+    safe_runtime_component, AgentRegistry, ArtifactRef, GoalContract, StepReport,
+    VerificationFinding, WorkflowError, WorkflowIr, WorkflowRunState, WorkflowRuntimeEventStore,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -38,6 +38,12 @@ pub struct WorkflowRuntimeBundle {
     pub registry: AgentRegistry,
     #[serde(default)]
     pub dispatches: Vec<WorkflowDispatchRecord>,
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactRef>,
+    #[serde(default)]
+    pub step_reports: Vec<StepReport>,
+    #[serde(default)]
+    pub verification_findings: Vec<VerificationFinding>,
     pub updated_at: String,
 }
 
@@ -216,9 +222,10 @@ fn validate_bundle_contract(bundle: &WorkflowRuntimeBundle) -> Result<(), Workfl
 mod tests {
     use super::*;
     use crate::harness::workflow::{
-        AgentRegistry, AgentRegistryEntry, ControlPolicy, GoalAlignment, GoalContract, RetryPolicy,
-        RunStatus, WorkflowError, WorkflowIr, WorkflowRunState, WorkflowStatus, WorkflowStep,
-        WorkflowStepKind, WorkflowStepMode, WorkflowStepStatus,
+        AgentRegistry, AgentRegistryEntry, ArtifactRef, ArtifactType, ControlPolicy, GoalAlignment,
+        GoalContract, RetentionPolicy, RetryPolicy, RunStatus, WorkflowError, WorkflowIr,
+        WorkflowRunState, WorkflowStatus, WorkflowStep, WorkflowStepKind, WorkflowStepMode,
+        WorkflowStepStatus,
     };
     use serde_json::json;
     use std::fs;
@@ -303,6 +310,9 @@ mod tests {
                 status: WorkflowDispatchStatus::Running,
                 detail: Some("worker accepted task".to_string()),
             }],
+            artifacts: Vec::new(),
+            step_reports: Vec::new(),
+            verification_findings: Vec::new(),
             updated_at: updated_at.to_string(),
         }
     }
@@ -329,18 +339,42 @@ mod tests {
     }
 
     #[test]
-    fn runtime_bundle_defaults_missing_dispatches_to_empty() {
+    fn runtime_bundle_defaults_missing_reference_collections_to_empty() {
         let mut encoded =
             serde_json::to_value(bundle("run-legacy", "2026-06-22T00:01:00Z")).unwrap();
-        encoded
-            .as_object_mut()
-            .unwrap()
-            .remove("dispatches")
-            .unwrap();
+        let object = encoded.as_object_mut().unwrap();
+        object.remove("dispatches").unwrap();
+        object.remove("artifacts").unwrap();
+        object.remove("step_reports").unwrap();
+        object.remove("verification_findings").unwrap();
 
         let decoded: WorkflowRuntimeBundle = serde_json::from_value(encoded).unwrap();
 
         assert!(decoded.dispatches.is_empty());
+        assert!(decoded.artifacts.is_empty());
+        assert!(decoded.step_reports.is_empty());
+        assert!(decoded.verification_findings.is_empty());
+    }
+
+    #[test]
+    fn runtime_bundle_serializes_artifact_refs_without_generated_body_text() {
+        let mut expected = bundle("run-artifacts", "200");
+        expected.artifacts = vec![ArtifactRef {
+            artifact_id: "working-result".to_string(),
+            artifact_type: ArtifactType::Other,
+            uri: ".dualtrack/research/results/task/result.md".to_string(),
+            hash: "sha256:abc".to_string(),
+            mime_type: "text/markdown".to_string(),
+            producer_step_id: "S001".to_string(),
+            retention_policy: RetentionPolicy::Workflow,
+            created_at: "200".to_string(),
+        }];
+        expected.dispatches[0].detail = Some("research result recorded".to_string());
+
+        let encoded = serde_json::to_string(&expected).unwrap();
+
+        assert!(encoded.contains(".dualtrack/research/results/task/result.md"));
+        assert!(!encoded.contains("full model response body"));
     }
 
     #[test]

@@ -52,6 +52,37 @@ pub fn index_vault(root: &Path) -> Result<MdtProjectIndex, String> {
     Ok(MdtProjectIndex { nodes, edges })
 }
 
+pub fn index_vault_with_artifacts(root: &Path) -> Result<MdtProjectIndex, String> {
+    let index = index_vault(root)?;
+    write_index_artifacts(root, &index)?;
+    Ok(index)
+}
+
+pub fn write_index_artifacts(root: &Path, index: &MdtProjectIndex) -> Result<(), String> {
+    let index_dir = root.join(".dualtrack").join("mdt").join("indexes");
+    fs::create_dir_all(&index_dir)
+        .map_err(|err| format!("failed to create {}: {err}", index_dir.display()))?;
+
+    let nodes_path = index_dir.join("nodes.json");
+    let edges_path = index_dir.join("edges.json");
+    let project_path = index_dir.join("project.json");
+
+    write_json(&nodes_path, &index.nodes)?;
+    write_json(&edges_path, &index.edges)?;
+    write_json(
+        &project_path,
+        &serde_json::json!({
+            "mdt_version": "0.1.0",
+            "node_count": index.nodes.len(),
+            "edge_count": index.edges.len(),
+            "nodes_path": "nodes.json",
+            "edges_path": "edges.json"
+        }),
+    )?;
+
+    Ok(())
+}
+
 pub fn validate_vault(root: &Path) -> MdtValidationReport {
     match index_vault(root) {
         Ok(index) => {
@@ -78,6 +109,12 @@ pub fn validate_vault(root: &Path) -> MdtValidationReport {
             warnings: Vec::new(),
         },
     }
+}
+
+fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|err| format!("failed to serialize {}: {err}", path.display()))?;
+    fs::write(path, json).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
 fn collect_markdown_files(

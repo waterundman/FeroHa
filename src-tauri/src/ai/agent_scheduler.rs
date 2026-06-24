@@ -1,19 +1,29 @@
 // Agent Scheduler — Manage AI agent task lifecycle
 // v2.4: Task Handoff state machine (Pending→Approved→Running→Done|Error)
 
-use super::sandbox::SandboxPolicy;
+use super::research_trace::TaskContext;
+use super::sandbox::{NetworkPolicy, SandboxPolicy};
 use super::subagent::{DataSource, SearchType, Subagent, SubagentJob, SubagentResult};
 use super::task_intent::TaskIntentType;
 use crate::cli::parser::CliCommand;
 use crate::graph::manifest::GraphManifest;
-use crate::harness::context::ContextFragment;
+use crate::harness::context::{ContextFragment, ContextLayer, ContextSource};
 use crate::harness::orchestrator::{
-    AuditAction, Orchestrator, OrchestratorMaterialPacket, RegressionMetrics,
+    AuditAction, Orchestrator, OrchestratorMaterialPacket, OrchestratorStatus, RegressionMetrics,
+    TrackInfo,
 };
+use crate::harness::orchestrator_runtime::ControlledSubagentJob;
+use crate::harness::proposition_kernel::PropositionKernel;
 use crate::harness::regression::DreamAuditSnapshot;
-use crate::harness::scientist::Scientist;
+use crate::harness::scientist::{CleanKnowledge, Scientist};
+use crate::harness::workflow::{
+    AgentRegistry, GoalContract, HarnessEvent, OrchestratorReplanRequest, StepReport,
+    VerificationFinding, WorkflowError, WorkflowIr, WorkflowPatch, WorkflowRunState,
+    WorkflowRuntimeEventChain, WorkflowRuntimeEventStore,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -159,6 +169,87 @@ pub struct SchedulerStats {
     pub failed: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AiFaceMemoryRole {
+    HumanTask,
+    AiMemoryExpansion,
+    OrchestratorVerification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AiScientistVerificationState {
+    NoClaims,
+    NotRun,
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AiScientistConfidenceBasis {
+    None,
+    EvidenceFallback,
+    KernelVerification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiScientistVerificationSummary {
+    pub state: AiScientistVerificationState,
+    pub passed: Option<bool>,
+    pub violation_count: usize,
+    pub overall_confidence: f32,
+    pub confidence_basis: AiScientistConfidenceBasis,
+    pub evidence_chain_count: usize,
+    pub kernel_name: String,
+    pub kernel_scope: String,
+    pub is_truth_proof: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiFaceDataFlow {
+    pub task_id: String,
+    pub manager_status: String,
+    pub manager_phase: SynthesizePhase,
+    pub memory_role: AiFaceMemoryRole,
+    pub manager_has_trace: bool,
+    pub orchestrator_enabled: bool,
+    pub scientist_claim_count: usize,
+    pub scientist_source_count: usize,
+    pub scientist_verification: AiScientistVerificationSummary,
+    pub context_fragment_count: usize,
+    pub subagent_result_count: usize,
+    pub sandbox_summary: Option<String>,
+    pub material_packet_focus: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AiManagerControlAction {
+    OrchestratorTrackPending,
+    BridgeReviewPending,
+    RunningTasks,
+    DispatchReady,
+    Idle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiManagerSnapshot {
+    pub total_tasks: usize,
+    pub pending_review_count: usize,
+    pub execution_queue_count: usize,
+    pub running_count: usize,
+    pub completed_count: usize,
+    pub failed_count: usize,
+    pub human_task_count: usize,
+    pub memory_expansion_count: usize,
+    pub verification_track_count: usize,
+    pub bridge_required_count: usize,
+    pub read_only_count: usize,
+    pub write_capable_count: usize,
+    pub network_enabled_count: usize,
+    pub scientist_payload_count: usize,
+    pub orchestrator_packet_count: usize,
+    pub latest_control_action: AiManagerControlAction,
+}
+
 /// Background agent task scheduler
 ///
 /// Architecture:
@@ -186,6 +277,10 @@ pub struct AgentScheduler {
     cancel_tokens: HashMap<String, CancellationToken>,
     pub subagent: Option<Subagent>,
     pub orchestrator: Option<Orchestrator>,
+    workflow_runtime_events: Vec<HarnessEvent>,
+    workflow_replan_request_count: usize,
+    workflow_event_root: Option<PathBuf>,
+    workflow_event_log_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +305,10 @@ impl AgentScheduler {
             cancel_tokens: HashMap::new(),
             subagent: None,
             orchestrator: Some(Orchestrator::new(max_concurrent)),
+            workflow_runtime_events: Vec::new(),
+            workflow_replan_request_count: 0,
+            workflow_event_root: None,
+            workflow_event_log_path: None,
         }
     }
 
@@ -221,6 +320,9 @@ impl AgentScheduler {
         let mut pending_task = task;
         pending_task.status = TaskStatus::Pending;
         pending_task.priority_score = self.calculate_priority(&pending_task, &None);
+        if pending_task.sub_tasks.is_empty() {
+            pending_task.sub_tasks = self.decompose_task(&pending_task);
+        }
         self.tasks
             .insert(pending_task.id.clone(), pending_task.clone());
         self.pending_queue.push_back(pending_task);
@@ -310,13 +412,23 @@ impl AgentScheduler {
 
     /// Mark a task as completed
     pub fn complete(&mut self, task_id: &str, result: String) {
-        self.complete_with_dream_snapshot(task_id, result, None);
+        self.complete_with_context_and_dream_snapshot(task_id, result, None, None);
     }
 
     pub fn complete_with_dream_snapshot(
         &mut self,
         task_id: &str,
         result: String,
+        dream_snapshot: Option<DreamAuditSnapshot>,
+    ) {
+        self.complete_with_context_and_dream_snapshot(task_id, result, None, dream_snapshot);
+    }
+
+    pub fn complete_with_context_and_dream_snapshot(
+        &mut self,
+        task_id: &str,
+        result: String,
+        task_context: Option<&TaskContext>,
         dream_snapshot: Option<DreamAuditSnapshot>,
     ) {
         self.running_count = self.running_count.saturating_sub(1);
@@ -327,6 +439,7 @@ impl AgentScheduler {
                 result,
             },
         );
+        self.record_completion_context(task_id, task_context);
 
         if let Some(ref mut orch) = self.orchestrator {
             if self.tasks.get(task_id).is_some() {
@@ -361,6 +474,92 @@ impl AgentScheduler {
                     }
                 }
             }
+        }
+    }
+
+    fn record_completion_context(&mut self, task_id: &str, task_context: Option<&TaskContext>) {
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            for sub_task in &mut task.sub_tasks {
+                if matches!(
+                    sub_task.status,
+                    SubTaskStatus::Pending | SubTaskStatus::Running
+                ) {
+                    sub_task.status = SubTaskStatus::Done;
+                }
+            }
+            task.has_trace = true;
+
+            if let Some(context) = task_context {
+                let retrieval_results = context
+                    .retrieval_evidence
+                    .iter()
+                    .map(Self::subagent_result_from_task_evidence)
+                    .collect::<Vec<_>>();
+                for result in retrieval_results {
+                    task.subagent_results.retain(|existing| {
+                        !(existing.source == result.source
+                            && existing.hop == result.hop
+                            && existing.generated_keywords == result.generated_keywords)
+                    });
+                    task.subagent_results.push(result);
+                }
+
+                let key = format!("task.{}.trace_context", task_id);
+                if let Ok(value) = serde_json::to_value(context) {
+                    let fragment = ContextFragment {
+                        id: format!("{}_trace_context", task_id),
+                        key: key.clone(),
+                        value: value.clone(),
+                        source: ContextSource::Agent,
+                        layer: ContextLayer::Transient,
+                        created_at: now_millis(),
+                        ttl: None,
+                        hash: ContextFragment::compute_hash(&key, &value),
+                    };
+                    task.context_fragments.retain(|frag| frag.key != key);
+                    task.context_fragments.push(fragment);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn subagent_result_from_task_evidence(
+        evidence: &super::research_trace::TaskEvidence,
+    ) -> SubagentResult {
+        let entries = evidence
+            .entries
+            .iter()
+            .map(|entry| super::subagent::SubagentEntry {
+                title: entry.title.clone(),
+                snippet: entry.snippet.clone(),
+                url: entry.url.clone(),
+                authors: entry.authors.clone(),
+                year: entry.year,
+                source: entry.source.clone(),
+                relevance_score: entry.relevance_score,
+            })
+            .collect::<Vec<_>>();
+
+        SubagentResult {
+            source: Self::data_source_from_evidence_label(&evidence.source),
+            entries,
+            hop: evidence.hop,
+            generated_keywords: evidence.generated_keywords.clone(),
+            total_found: evidence.total_found,
+            graph_manifest: None,
+        }
+    }
+
+    pub(crate) fn data_source_from_evidence_label(source: &str) -> DataSource {
+        let normalized = source.to_ascii_lowercase();
+        if normalized.contains("semantic") || normalized.contains("s2") {
+            DataSource::SemanticScholar
+        } else if normalized.contains("arxiv") {
+            DataSource::Arxiv
+        } else if normalized.contains("web") {
+            DataSource::WebSearch
+        } else {
+            DataSource::LocalVector
         }
     }
 
@@ -408,7 +607,9 @@ impl AgentScheduler {
                 };
                 retry_task.priority = TaskPriority::Low; // Downgrade on retry
                 self.queue.push_back(retry_task);
-                self.tasks.remove(task_id);
+                if let Some(queued_retry) = self.queue.back().cloned() {
+                    self.tasks.insert(task_id.to_string(), queued_retry);
+                }
                 return;
             }
         }
@@ -505,6 +706,104 @@ impl AgentScheduler {
             .collect()
     }
 
+    pub fn list_ai_face_data_flows(&self) -> Vec<AiFaceDataFlow> {
+        let mut tasks = self.tasks.values().collect::<Vec<_>>();
+        tasks.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        tasks
+            .into_iter()
+            .filter_map(|task| self.ai_face_data_flow(&task.id))
+            .collect()
+    }
+
+    pub fn ai_manager_snapshot(&self) -> AiManagerSnapshot {
+        let mut running_count = 0;
+        let mut completed_count = 0;
+        let mut failed_count = 0;
+        let mut human_task_count = 0;
+        let mut memory_expansion_count = 0;
+        let mut verification_track_count = 0;
+        let mut bridge_required_count = 0;
+        let mut read_only_count = 0;
+        let mut write_capable_count = 0;
+        let mut network_enabled_count = 0;
+        let mut scientist_payload_count = 0;
+        let mut orchestrator_packet_count = 0;
+
+        for task in self.tasks.values() {
+            match task.status {
+                TaskStatus::Running { .. } => running_count += 1,
+                TaskStatus::Done { .. } => completed_count += 1,
+                TaskStatus::Error { .. } => failed_count += 1,
+                _ => {}
+            }
+
+            match memory_role_for_task(task) {
+                AiFaceMemoryRole::HumanTask => human_task_count += 1,
+                AiFaceMemoryRole::AiMemoryExpansion => memory_expansion_count += 1,
+                AiFaceMemoryRole::OrchestratorVerification => verification_track_count += 1,
+            }
+
+            if let Some(policy) = task.sandbox_policy.as_ref() {
+                if policy.requires_bridge {
+                    bridge_required_count += 1;
+                }
+                if policy.write_roots.is_empty() {
+                    read_only_count += 1;
+                } else {
+                    write_capable_count += 1;
+                }
+                if policy.network_policy != NetworkPolicy::Disabled {
+                    network_enabled_count += 1;
+                }
+            }
+
+            scientist_payload_count += task.context_fragments.len() + task.subagent_results.len();
+            if task.material_packet.is_some() {
+                orchestrator_packet_count += 1;
+            }
+        }
+
+        AiManagerSnapshot {
+            total_tasks: self.tasks.len(),
+            pending_review_count: self.pending_queue.len(),
+            execution_queue_count: self.high_queue.len() + self.queue.len(),
+            running_count,
+            completed_count,
+            failed_count,
+            human_task_count,
+            memory_expansion_count,
+            verification_track_count,
+            bridge_required_count,
+            read_only_count,
+            write_capable_count,
+            network_enabled_count,
+            scientist_payload_count,
+            orchestrator_packet_count,
+            latest_control_action: self.latest_manager_control_action(),
+        }
+    }
+
+    fn latest_manager_control_action(&self) -> AiManagerControlAction {
+        if self.high_queue.iter().any(|task| {
+            task.material_packet.is_some()
+                || task.card_type.as_deref() == Some("orchestrator-track")
+        }) {
+            AiManagerControlAction::OrchestratorTrackPending
+        } else if !self.pending_queue.is_empty() {
+            AiManagerControlAction::BridgeReviewPending
+        } else if self.running_count > 0 {
+            AiManagerControlAction::RunningTasks
+        } else if !self.high_queue.is_empty() || !self.queue.is_empty() {
+            AiManagerControlAction::DispatchReady
+        } else {
+            AiManagerControlAction::Idle
+        }
+    }
+
     /// Get status update receiver for external listeners
     pub fn status_receiver(&mut self) -> &mut mpsc::UnboundedReceiver<TaskStatusUpdate> {
         &mut self.status_rx
@@ -514,8 +813,17 @@ impl AgentScheduler {
         self.subagent = Some(subagent);
     }
 
-    pub fn orchestrator_status(&self) -> Option<crate::harness::orchestrator::OrchestratorStatus> {
-        self.orchestrator.as_ref().map(|o| o.status())
+    pub fn set_workflow_event_root(&mut self, root: impl AsRef<Path>) {
+        self.workflow_event_root = Some(root.as_ref().to_path_buf());
+    }
+
+    pub fn orchestrator_status(&self) -> Option<OrchestratorStatus> {
+        self.orchestrator.as_ref().map(|o| {
+            let mut status = o.status();
+            self.apply_runtime_track_status(&mut status);
+            self.apply_workflow_runtime_events(&mut status);
+            status
+        })
     }
 
     pub fn orchestrator_events(&self) -> Vec<crate::harness::orchestrator::OrchestratorEvent> {
@@ -523,6 +831,182 @@ impl AgentScheduler {
             .as_ref()
             .map(|o| o.event_log.clone())
             .unwrap_or_default()
+    }
+
+    pub fn build_orchestrator_replan_request(
+        &mut self,
+        agent_id: &str,
+        goal: &GoalContract,
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
+        reports: &[StepReport],
+        findings: &[VerificationFinding],
+        registry: &AgentRegistry,
+    ) -> OrchestratorReplanRequest {
+        if let Some(orchestrator) = self.orchestrator.as_mut() {
+            orchestrator.record_verification_findings(agent_id, findings);
+        }
+
+        let request = OrchestratorReplanRequest::from_runtime(
+            goal, workflow, run, reports, findings, registry,
+        );
+        let event_chain =
+            WorkflowRuntimeEventChain::from_replan_request(&request, now_millis().to_string());
+        self.record_workflow_event_chain(&event_chain);
+
+        request
+    }
+
+    pub fn prepare_workflow_subagent_jobs(
+        &mut self,
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
+        registry: &AgentRegistry,
+    ) -> Result<Vec<ControlledSubagentJob>, WorkflowError> {
+        let dispatches = run.ready_dispatches(workflow, registry)?;
+        let event_chain = WorkflowRuntimeEventChain::from_step_dispatches(
+            &dispatches,
+            now_millis().to_string(),
+        );
+        self.record_workflow_event_chain(&event_chain);
+        Ok(dispatches
+            .into_iter()
+            .map(ControlledSubagentJob::from_dispatch)
+            .collect())
+    }
+
+    fn apply_runtime_track_status(&self, status: &mut OrchestratorStatus) {
+        let mut track_details = self
+            .tasks
+            .values()
+            .filter_map(runtime_track_info_for_task)
+            .collect::<Vec<_>>();
+
+        if track_details.is_empty() {
+            return;
+        }
+
+        track_details.sort_by(|a, b| a.track_id.cmp(&b.track_id));
+
+        let material_packet_count = track_details.len();
+        let completed_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "completed")
+            .count();
+        let failed_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "failed")
+            .count();
+        let cancelled_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "cancelled")
+            .count();
+        let active_track_count = material_packet_count
+            .saturating_sub(completed_track_count + failed_track_count + cancelled_track_count);
+
+        status.material_packet_count = material_packet_count;
+        status.active_track_count = active_track_count;
+        status.completed_track_count = completed_track_count;
+        status.failed_track_count = failed_track_count;
+        status.cancelled_track_count = cancelled_track_count;
+        status.track_count = active_track_count;
+        status.track_details = track_details;
+    }
+
+    fn apply_workflow_runtime_events(&self, status: &mut OrchestratorStatus) {
+        status.workflow_event_count = self.workflow_runtime_events.len();
+        status.workflow_replan_request_count = self.workflow_replan_request_count;
+        status.recent_workflow_events = self
+            .workflow_runtime_events
+            .iter()
+            .rev()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        status.workflow_event_log_path = self.workflow_event_log_path.clone();
+    }
+
+    pub(crate) fn record_workflow_event_chain(&mut self, chain: &WorkflowRuntimeEventChain) {
+        if chain.replan_requested {
+            self.workflow_replan_request_count += 1;
+        }
+        self.workflow_runtime_events.extend(chain.events.clone());
+        const MAX_WORKFLOW_RUNTIME_EVENTS: usize = 50;
+        if self.workflow_runtime_events.len() > MAX_WORKFLOW_RUNTIME_EVENTS {
+            let overflow = self.workflow_runtime_events.len() - MAX_WORKFLOW_RUNTIME_EVENTS;
+            self.workflow_runtime_events.drain(0..overflow);
+        }
+        if let Some(root) = self.workflow_event_root.as_ref() {
+            if let Ok(path) = WorkflowRuntimeEventStore::append_chain(root, chain) {
+                self.workflow_event_log_path = Some(path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    pub fn record_workflow_patch_decision(
+        &mut self,
+        workflow_id: &str,
+        run_id: &str,
+        patch: &WorkflowPatch,
+        accepted: bool,
+        reason: &str,
+    ) {
+        let event_chain = WorkflowRuntimeEventChain::from_patch_decision(
+            workflow_id,
+            run_id,
+            patch,
+            accepted,
+            now_millis().to_string(),
+            reason,
+        );
+        self.record_workflow_event_chain(&event_chain);
+    }
+
+    pub fn record_workflow_patch_review_request(
+        &mut self,
+        run_id: &str,
+        patch: &WorkflowPatch,
+        proposal_id: &str,
+    ) {
+        let event_chain = WorkflowRuntimeEventChain::from_patch_review_request(
+            run_id,
+            patch,
+            proposal_id,
+            now_millis().to_string(),
+        );
+        self.record_workflow_event_chain(&event_chain);
+    }
+
+    pub fn workflow_runtime_events_for_run(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HarnessEvent>, String> {
+        if let Some(root) = self.workflow_event_root.as_ref() {
+            return WorkflowRuntimeEventStore::read_recent(root, run_id, limit)
+                .map_err(|err| err.to_string());
+        }
+
+        let mut events = self
+            .workflow_runtime_events
+            .iter()
+            .filter(|event| {
+                event
+                    .attributes
+                    .get("run_id")
+                    .and_then(|value| value.as_str())
+                    == Some(run_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if limit > 0 && events.len() > limit {
+            Ok(events.split_off(events.len() - limit))
+        } else {
+            Ok(events)
+        }
     }
 
     pub fn terminate_agent(&mut self, agent_id: &str) -> bool {
@@ -813,11 +1297,125 @@ impl AgentScheduler {
         self.tasks.get(task_id)
     }
 
+    pub fn ai_face_data_flow(&self, task_id: &str) -> Option<AiFaceDataFlow> {
+        let task = self.tasks.get(task_id)?;
+        let knowledge = Scientist::extract_knowledge(task);
+
+        Some(AiFaceDataFlow {
+            task_id: task.id.clone(),
+            manager_status: task_status_label(&task.status).to_string(),
+            manager_phase: task.synthesize_phase.clone(),
+            memory_role: memory_role_for_task(task),
+            manager_has_trace: task.has_trace,
+            orchestrator_enabled: self.orchestrator.is_some(),
+            scientist_claim_count: knowledge.claims.len(),
+            scientist_source_count: knowledge.sources.len(),
+            scientist_verification: scientist_verification_summary(&knowledge),
+            context_fragment_count: task.context_fragments.len(),
+            subagent_result_count: task.subagent_results.len(),
+            sandbox_summary: task.sandbox_policy.as_ref().map(SandboxPolicy::summary),
+            material_packet_focus: task
+                .material_packet
+                .as_ref()
+                .map(|packet| packet.focus.clone()),
+        })
+    }
+
     pub fn get_task_manifest(&self, task_id: &str) -> Result<&GraphManifest, String> {
         self.tasks
             .get(task_id)
             .and_then(|t| t.graph_manifest.as_ref())
             .ok_or_else(|| format!("No manifest for task: {}", task_id))
+    }
+}
+
+fn task_status_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::Approved { .. } => "approved",
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running { .. } => "running",
+        TaskStatus::Done { .. } => "done",
+        TaskStatus::Error { .. } => "error",
+        TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn memory_role_for_task(task: &AgentTask) -> AiFaceMemoryRole {
+    if task.material_packet.is_some() || task.card_type.as_deref() == Some("orchestrator-track") {
+        AiFaceMemoryRole::OrchestratorVerification
+    } else if task.intent.contains("dream")
+        || task.card_type.as_deref() == Some("dream")
+        || task.card_type.as_deref() == Some("memory-expansion")
+    {
+        AiFaceMemoryRole::AiMemoryExpansion
+    } else {
+        AiFaceMemoryRole::HumanTask
+    }
+}
+
+fn runtime_track_info_for_task(task: &AgentTask) -> Option<TrackInfo> {
+    let packet = task.material_packet.as_ref()?;
+    Some(TrackInfo {
+        track_id: task.id.clone(),
+        focus: packet.focus.clone(),
+        status: runtime_track_status_label(&task.status).to_string(),
+        parent_agent: packet.parent_task_id.clone(),
+        reason: Some(packet.instruction.clone()),
+        claim_count: packet.claims.len(),
+        source_ref_count: packet.source_refs.len(),
+    })
+}
+
+fn runtime_track_status_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::Approved { .. } => "approved",
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running { .. } => "running",
+        TaskStatus::Done { .. } => "completed",
+        TaskStatus::Error { .. } => "failed",
+        TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn scientist_verification_summary(knowledge: &CleanKnowledge) -> AiScientistVerificationSummary {
+    let has_claims = !knowledge.claims.is_empty();
+    let confidence = if !has_claims {
+        0.0
+    } else if knowledge.confidence_map.is_empty() {
+        0.5
+    } else {
+        knowledge
+            .confidence_map
+            .values()
+            .copied()
+            .fold(0.0_f32, f32::max)
+            .clamp(0.0, 1.0)
+    };
+
+    AiScientistVerificationSummary {
+        state: if has_claims {
+            AiScientistVerificationState::NotRun
+        } else {
+            AiScientistVerificationState::NoClaims
+        },
+        passed: None,
+        violation_count: 0,
+        overall_confidence: confidence,
+        confidence_basis: if has_claims {
+            AiScientistConfidenceBasis::EvidenceFallback
+        } else {
+            AiScientistConfidenceBasis::None
+        },
+        evidence_chain_count: knowledge.claims.len(),
+        kernel_name: PropositionKernel::NAME.to_string(),
+        kernel_scope: if has_claims {
+            "not_run".to_string()
+        } else {
+            "no_claims".to_string()
+        },
+        is_truth_proof: false,
     }
 }
 
@@ -1017,6 +1615,187 @@ mod tests {
     }
 
     #[test]
+    fn submit_decomposes_empty_task_for_audit_claims() {
+        let mut sched = AgentScheduler::new(2);
+        sched.submit(make_task("t1", TaskPriority::Medium));
+
+        let stored = sched.get_task("t1").expect("task should be stored");
+        assert!(!stored.sub_tasks.is_empty());
+        assert_eq!(stored.sub_tasks[0].parent_task_id, "t1");
+    }
+
+    #[test]
+    fn complete_records_trace_context_and_marks_subtasks_done() {
+        let mut sched = AgentScheduler::new(2);
+        let mut task = make_task("t1", TaskPriority::Medium);
+        task.intent = "audit research".to_string();
+        sched.submit(task);
+        sched.approve("t1", "human").unwrap();
+
+        let running = sched.dequeue().unwrap();
+        let mut phase_timings = std::collections::HashMap::new();
+        phase_timings.insert("retrieve_ms".to_string(), 12);
+        let context = TaskContext {
+            intent: "audit research".to_string(),
+            ghost_ids: vec!["ghost_1".to_string()],
+            phase_timings,
+            ..TaskContext::default()
+        };
+
+        sched.complete_with_context_and_dream_snapshot(
+            &running.id,
+            "done".to_string(),
+            Some(&context),
+            None,
+        );
+
+        let stored = sched.get_task("t1").expect("task should be stored");
+        assert!(stored.has_trace);
+        assert!(stored
+            .sub_tasks
+            .iter()
+            .all(|sub_task| matches!(sub_task.status, SubTaskStatus::Done)));
+        let trace_fragment = stored
+            .context_fragments
+            .iter()
+            .find(|fragment| fragment.key == "task.t1.trace_context")
+            .expect("trace context should be recorded as evidence");
+        assert_eq!(
+            trace_fragment.source,
+            crate::harness::context::ContextSource::Agent
+        );
+        assert_eq!(
+            trace_fragment.value["intent"].as_str(),
+            Some("audit research")
+        );
+
+        let knowledge = crate::harness::scientist::Scientist::extract_knowledge(stored);
+        assert!(!knowledge.claims.is_empty());
+        assert_eq!(knowledge.sources.len(), 1);
+    }
+
+    #[test]
+    fn complete_converts_trace_retrieval_evidence_into_subagent_results() {
+        let mut sched = AgentScheduler::new(2);
+        let task = make_task("t1", TaskPriority::Medium);
+        sched.submit(task);
+        sched.approve("t1", "human").unwrap();
+
+        let running = sched.dequeue().unwrap();
+        let context = TaskContext {
+            intent: "bayes search".to_string(),
+            retrieval_evidence: vec![crate::ai::research_trace::TaskEvidence {
+                source: "local_vector".to_string(),
+                hop: 0,
+                generated_keywords: vec!["bayes".to_string()],
+                total_found: 1,
+                entries: vec![crate::ai::research_trace::TaskEvidenceEntry {
+                    title: "Bayes.md".to_string(),
+                    snippet: "Bayesian evidence".to_string(),
+                    url: None,
+                    authors: vec![],
+                    year: None,
+                    source: "Bayes.md".to_string(),
+                    relevance_score: 0.91,
+                }],
+            }],
+            ..TaskContext::default()
+        };
+
+        sched.complete_with_context_and_dream_snapshot(
+            &running.id,
+            "done".to_string(),
+            Some(&context),
+            None,
+        );
+
+        let stored = sched.get_task("t1").expect("task should be stored");
+        assert_eq!(stored.subagent_results.len(), 1);
+        assert_eq!(stored.subagent_results[0].source, DataSource::LocalVector);
+        assert_eq!(stored.subagent_results[0].total_found, 1);
+        assert_eq!(stored.subagent_results[0].entries[0].title, "Bayes.md");
+
+        let knowledge = crate::harness::scientist::Scientist::extract_knowledge(stored);
+        assert_eq!(
+            knowledge.confidence_map.get("Bayes.md").copied(),
+            Some(0.91)
+        );
+    }
+
+    #[test]
+    fn ai_face_data_flow_exposes_manager_scientist_and_orchestrator_contract() {
+        let mut sched = AgentScheduler::new(2);
+        let mut task = make_task("t1", TaskPriority::Medium);
+        task.intent = "audit research".to_string();
+        sched.submit(task);
+        sched.approve("t1", "human").unwrap();
+
+        let running = sched.dequeue().unwrap();
+        let context = TaskContext {
+            intent: "audit research".to_string(),
+            retrieval_evidence: vec![crate::ai::research_trace::TaskEvidence {
+                source: "local_vector".to_string(),
+                hop: 0,
+                generated_keywords: vec!["bayes".to_string()],
+                total_found: 1,
+                entries: vec![crate::ai::research_trace::TaskEvidenceEntry {
+                    title: "Bayes.md".to_string(),
+                    snippet: "Bayesian evidence".to_string(),
+                    url: None,
+                    authors: vec![],
+                    year: None,
+                    source: "Bayes.md".to_string(),
+                    relevance_score: 0.88,
+                }],
+            }],
+            ..TaskContext::default()
+        };
+
+        sched.complete_with_context_and_dream_snapshot(
+            &running.id,
+            "done".to_string(),
+            Some(&context),
+            None,
+        );
+
+        let flow = sched
+            .ai_face_data_flow("t1")
+            .expect("AI face data flow should be available for stored tasks");
+        assert_eq!(flow.task_id, "t1");
+        assert_eq!(flow.manager_status, "done");
+        assert_eq!(flow.memory_role, AiFaceMemoryRole::HumanTask);
+        assert!(flow.manager_has_trace);
+        assert!(flow.orchestrator_enabled);
+        assert!(flow.scientist_claim_count > 0);
+        assert_eq!(flow.scientist_source_count, 1);
+        assert_eq!(
+            flow.scientist_verification.state,
+            AiScientistVerificationState::NotRun
+        );
+        assert_eq!(flow.scientist_verification.passed, None);
+        assert_eq!(flow.scientist_verification.violation_count, 0);
+        assert_eq!(
+            flow.scientist_verification.evidence_chain_count,
+            flow.scientist_claim_count
+        );
+        assert_eq!(
+            flow.scientist_verification.confidence_basis,
+            AiScientistConfidenceBasis::EvidenceFallback
+        );
+        assert_eq!(flow.scientist_verification.kernel_name, "PropositionKernel");
+        assert_eq!(flow.scientist_verification.kernel_scope, "not_run");
+        assert!(!flow.scientist_verification.is_truth_proof);
+        assert!((flow.scientist_verification.overall_confidence - 0.88).abs() < f32::EPSILON);
+        assert_eq!(flow.context_fragment_count, 1);
+        assert_eq!(flow.subagent_result_count, 1);
+        assert!(flow
+            .sandbox_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("bridge=true"));
+    }
+
+    #[test]
     fn test_retry_on_failure() {
         let mut sched = AgentScheduler::new(2);
         let mut task = make_task("t1", TaskPriority::Medium);
@@ -1032,6 +1811,10 @@ mod tests {
         assert_eq!(retry.id, "t1");
         assert!(matches!(retry.priority, TaskPriority::Low));
         assert_eq!(retry.retry_count, 1);
+        assert!(matches!(
+            sched.status("t1"),
+            Some(TaskStatus::Running { .. })
+        ));
     }
 
     #[test]
@@ -1080,6 +1863,130 @@ mod tests {
 
         let all = sched.list_tasks(None);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_ai_face_data_flows_orders_tasks_and_marks_memory_roles() {
+        let mut sched = AgentScheduler::new(2);
+        let mut human_task = make_task("z-human", TaskPriority::Medium);
+        human_task.created_at = 300;
+        let mut dream_task = make_task("a-dream", TaskPriority::Low);
+        dream_task.created_at = 100;
+        dream_task.intent = "dream memory expansion".to_string();
+        dream_task.card_type = Some("dream".to_string());
+        let parent = make_task("parent", TaskPriority::Medium);
+        let packet = crate::harness::orchestrator::OrchestratorMaterialPacket {
+            track_id: "parent_track_0".to_string(),
+            parent_task_id: "parent".to_string(),
+            focus: "correctness".to_string(),
+            instruction: "Verify claims".to_string(),
+            prompt: "Focus: correctness\nClaim A".to_string(),
+            claims: vec!["Claim A".to_string()],
+            source_refs: vec!["Bayes.md#intro".to_string()],
+            sandbox_policy: crate::ai::task_intent::TaskIntentType::Verify.default_sandbox_policy(),
+        };
+        let mut track_task = AgentScheduler::track_task_from_packet(&parent, packet);
+        track_task.created_at = 200;
+
+        sched.submit(human_task);
+        sched.submit(dream_task);
+        sched.tasks.insert(track_task.id.clone(), track_task);
+
+        let flows = sched.list_ai_face_data_flows();
+
+        assert_eq!(
+            flows
+                .iter()
+                .map(|flow| flow.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-dream", "parent_track_0", "z-human"]
+        );
+        assert_eq!(flows[0].memory_role, AiFaceMemoryRole::AiMemoryExpansion);
+        assert_eq!(
+            flows[1].memory_role,
+            AiFaceMemoryRole::OrchestratorVerification
+        );
+        assert_eq!(
+            flows[1].material_packet_focus.as_deref(),
+            Some("correctness")
+        );
+        assert_eq!(flows[2].memory_role, AiFaceMemoryRole::HumanTask);
+    }
+
+    #[test]
+    fn ai_manager_snapshot_exposes_control_surface_and_memory_outputs() {
+        let mut sched = AgentScheduler::new(2);
+        let pending_human = make_task("human", TaskPriority::Medium);
+        let mut dream_task = make_task("dream", TaskPriority::Low);
+        dream_task.task_intent = Some(TaskIntentType::Dream);
+        dream_task.sandbox_policy = Some(TaskIntentType::Dream.default_sandbox_policy());
+        dream_task.intent = "dream memory expansion".to_string();
+        dream_task.card_type = Some("dream".to_string());
+
+        sched.submit(pending_human);
+        sched.submit(dream_task);
+        sched.approve("dream", "human").unwrap();
+        let running = sched.dequeue().unwrap();
+        let context = TaskContext {
+            intent: "dream memory expansion".to_string(),
+            retrieval_evidence: vec![crate::ai::research_trace::TaskEvidence {
+                source: "local_vector".to_string(),
+                hop: 0,
+                generated_keywords: vec!["dream".to_string()],
+                total_found: 1,
+                entries: vec![crate::ai::research_trace::TaskEvidenceEntry {
+                    title: "Dream.md".to_string(),
+                    snippet: "Dream insight".to_string(),
+                    url: None,
+                    authors: vec![],
+                    year: None,
+                    source: "Dream.md".to_string(),
+                    relevance_score: 0.8,
+                }],
+            }],
+            ..TaskContext::default()
+        };
+        sched.complete_with_context_and_dream_snapshot(
+            &running.id,
+            "done".to_string(),
+            Some(&context),
+            None,
+        );
+
+        let parent = make_task("parent", TaskPriority::Medium);
+        let packet = crate::harness::orchestrator::OrchestratorMaterialPacket {
+            track_id: "parent_track_0".to_string(),
+            parent_task_id: "parent".to_string(),
+            focus: "correctness".to_string(),
+            instruction: "Verify claims".to_string(),
+            prompt: "Focus: correctness\nClaim A".to_string(),
+            claims: vec!["Claim A".to_string()],
+            source_refs: vec!["Dream.md#claim".to_string()],
+            sandbox_policy: crate::ai::task_intent::TaskIntentType::Verify.default_sandbox_policy(),
+        };
+        let track_task = AgentScheduler::track_task_from_packet(&parent, packet);
+        sched.high_queue.push_back(track_task.clone());
+        sched.tasks.insert(track_task.id.clone(), track_task);
+
+        let snapshot = sched.ai_manager_snapshot();
+
+        assert_eq!(snapshot.total_tasks, 3);
+        assert_eq!(snapshot.pending_review_count, 1);
+        assert_eq!(snapshot.execution_queue_count, 1);
+        assert_eq!(snapshot.completed_count, 1);
+        assert_eq!(snapshot.human_task_count, 1);
+        assert_eq!(snapshot.memory_expansion_count, 1);
+        assert_eq!(snapshot.verification_track_count, 1);
+        assert_eq!(snapshot.bridge_required_count, 2);
+        assert_eq!(snapshot.read_only_count, 2);
+        assert_eq!(snapshot.write_capable_count, 1);
+        assert_eq!(snapshot.network_enabled_count, 1);
+        assert_eq!(snapshot.scientist_payload_count, 2);
+        assert_eq!(snapshot.orchestrator_packet_count, 1);
+        assert_eq!(
+            snapshot.latest_control_action,
+            AiManagerControlAction::OrchestratorTrackPending
+        );
     }
 
     #[test]
@@ -1184,6 +2091,404 @@ mod tests {
             .as_ref()
             .unwrap()
             .allows_tool("proposition_kernel"));
+    }
+
+    #[test]
+    fn orchestrator_status_uses_runtime_track_tasks_for_packet_and_active_counts() {
+        let mut sched = AgentScheduler::new(4);
+        let parent = make_task("parent", TaskPriority::Medium);
+
+        for (index, (focus, status)) in [
+            (
+                "correctness",
+                TaskStatus::Approved {
+                    checked_at: 1,
+                    checked_by: "orchestrator".to_string(),
+                },
+            ),
+            (
+                "consistency",
+                TaskStatus::Done {
+                    completed_at: 2,
+                    result: "ok".to_string(),
+                },
+            ),
+            (
+                "verification",
+                TaskStatus::Error {
+                    message: "missing source".to_string(),
+                },
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let packet = crate::harness::orchestrator::OrchestratorMaterialPacket {
+                track_id: format!("parent_track_{}", index),
+                parent_task_id: "parent".to_string(),
+                focus: focus.to_string(),
+                instruction: format!("Verify {}", focus),
+                prompt: format!("Focus: {}", focus),
+                claims: vec!["Claim A".to_string()],
+                source_refs: vec!["Bayes.md#intro".to_string()],
+                sandbox_policy: crate::ai::task_intent::TaskIntentType::Verify
+                    .default_sandbox_policy(),
+            };
+            let mut track_task = AgentScheduler::track_task_from_packet(&parent, packet);
+            track_task.status = status;
+            sched.tasks.insert(track_task.id.clone(), track_task);
+        }
+
+        let status = sched
+            .orchestrator_status()
+            .expect("scheduler should expose orchestrator status");
+
+        assert_eq!(status.track_event_count, 0);
+        assert_eq!(status.material_packet_count, 3);
+        assert_eq!(status.active_track_count, 1);
+        assert_eq!(status.completed_track_count, 1);
+        assert_eq!(status.failed_track_count, 1);
+        assert_eq!(status.cancelled_track_count, 0);
+        assert_eq!(status.track_count, status.active_track_count);
+        assert_eq!(status.track_details.len(), 3);
+        assert_eq!(status.track_details[0].track_id, "parent_track_0");
+        assert_eq!(status.track_details[0].focus, "correctness");
+        assert_eq!(status.track_details[0].status, "approved");
+        assert_eq!(status.track_details[0].parent_agent, "parent");
+        assert_eq!(status.track_details[0].claim_count, 1);
+        assert_eq!(status.track_details[0].source_ref_count, 1);
+    }
+
+    #[test]
+    fn workflow_replan_request_records_verifier_findings_in_orchestrator_status() {
+        let mut sched = AgentScheduler::new(2);
+        let event_root = tempfile::tempdir().unwrap();
+        sched.set_workflow_event_root(event_root.path());
+        let goal = crate::harness::workflow::GoalContract {
+            goal_id: "goal_runtime".to_string(),
+            goal_text: "Connect verifier findings to orchestrator diagnostics".to_string(),
+            success_definition: vec![
+                "Runtime replan request is schema-valid".to_string(),
+                "Verifier findings are visible in orchestrator status".to_string(),
+            ],
+            non_goals: vec![],
+            constraints: serde_json::json!({"allow_direct_file_edit": false}),
+            context_scope: vec!["src-tauri/src/harness/**".to_string()],
+            approval_policy: serde_json::json!({"bridge_required": true}),
+            budget: serde_json::json!({"max_patch_chain": 3}),
+            created_at: "2026-06-05T16:30:00Z".to_string(),
+        };
+        let registry = crate::harness::workflow::AgentRegistry::from_agents(vec![
+            crate::harness::workflow::AgentRegistryEntry {
+                agent_type: "code_writer".to_string(),
+                allowed_tools: vec!["Read".to_string(), "Edit".to_string()],
+                denied_tools: vec!["Shell".to_string()],
+                default_mode: crate::harness::workflow::WorkflowStepMode::WritePatch,
+                max_parallelism: 1,
+                can_delegate: false,
+            },
+        ]);
+        let workflow = crate::harness::workflow::WorkflowIr {
+            workflow_id: "wf_runtime".to_string(),
+            goal_id: "goal_runtime".to_string(),
+            version: 1,
+            parent_version: None,
+            status: crate::harness::workflow::WorkflowStatus::Running,
+            global_context: serde_json::json!({"surface": "scheduler"}),
+            control_policy: crate::harness::workflow::ControlPolicy {
+                max_parallel_steps: 1,
+                replan_on_verification_fail: true,
+                max_patch_chain: 3,
+            },
+            steps: vec![crate::harness::workflow::WorkflowStep {
+                step_id: "S001".to_string(),
+                title: "Persist verifier finding".to_string(),
+                kind: crate::harness::workflow::WorkflowStepKind::Verify,
+                agent_type: "code_writer".to_string(),
+                mode: crate::harness::workflow::WorkflowStepMode::WritePatch,
+                task: "Record verifier finding through orchestrator status".to_string(),
+                inputs: serde_json::json!({"files": ["src-tauri/src/ai/agent_scheduler.rs"]}),
+                dependencies: vec![],
+                acceptance_criteria: vec![
+                    "Status contains workflow verifier diagnostic".to_string()
+                ],
+                goal_alignment: crate::harness::workflow::GoalAlignment {
+                    success_clauses: vec![2],
+                    why_necessary: "AI face needs the runtime diagnosis, not only a replan payload"
+                        .to_string(),
+                },
+                retry_policy: crate::harness::workflow::RetryPolicy {
+                    max_attempts: 1,
+                    backoff_ms: 0,
+                },
+                status: crate::harness::workflow::WorkflowStepStatus::Failed,
+            }],
+            created_by: "orchestrator@v1".to_string(),
+            created_at: "2026-06-05T16:31:00Z".to_string(),
+        };
+        let run = crate::harness::workflow::WorkflowRunState::for_workflow(
+            "run_runtime",
+            &workflow,
+            "2026-06-05T16:32:00Z",
+        );
+        let report = crate::harness::workflow::StepReport {
+            report_id: "sr_S001_a1".to_string(),
+            step_id: "S001".to_string(),
+            attempt: 1,
+            status: crate::harness::workflow::StepReportStatus::Failed,
+            summary: "Verifier failed before orchestrator status could show the finding."
+                .to_string(),
+            artifacts: vec![],
+            evidence: vec![],
+            risks: vec!["AI face would not see the minimal fix surface".to_string()],
+            blocked_by: vec![],
+            suggested_next_steps: vec![],
+            resource_usage: serde_json::json!({"token_total": 300}),
+            confidence: 0.66,
+        };
+        let finding = crate::harness::workflow::VerificationFinding {
+            verification_id: "vf_S001_runtime".to_string(),
+            level: crate::harness::workflow::VerificationLevel::Step,
+            target: "S001".to_string(),
+            result: crate::harness::workflow::VerificationOutcome::Fail,
+            failed_clauses: vec![2],
+            reason_code: "missing_runtime_state".to_string(),
+            summary: "Workflow verifier finding was not persisted into orchestrator status."
+                .to_string(),
+            evidence_refs: vec!["sr_S001_a1".to_string()],
+            minimal_fix_surface: vec![
+                "Record verifier findings while building replan requests".to_string()
+            ],
+        };
+
+        let request = sched.build_orchestrator_replan_request(
+            "workflow_runtime",
+            &goal,
+            &workflow,
+            &run,
+            &[report],
+            &[finding],
+            &registry,
+        );
+
+        assert_eq!(request.verifier_findings.len(), 1);
+        let status = sched
+            .orchestrator_status()
+            .expect("scheduler should expose orchestrator status");
+        let diagnostic = status
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.reason_code == "missing_runtime_state")
+            .expect("workflow verifier finding should be visible as orchestrator diagnostic");
+        assert_eq!(
+            diagnostic.source,
+            crate::harness::orchestrator::OrchestratorDiagnosticSource::WorkflowVerifier
+        );
+        assert_eq!(diagnostic.severity, "error");
+        assert_eq!(
+            diagnostic.minimal_fix_surface,
+            vec!["Record verifier findings while building replan requests"]
+        );
+        assert_eq!(status.workflow_event_count, 3);
+        assert_eq!(status.workflow_replan_request_count, 1);
+        assert_eq!(
+            status
+                .recent_workflow_events
+                .iter()
+                .map(|event| event.event_name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "workflow.step_report.recorded",
+                "workflow.verification.failed",
+                "workflow.replan.requested"
+            ]
+        );
+        let event_log_path = status
+            .workflow_event_log_path
+            .as_ref()
+            .expect("status should expose the latest persisted workflow event log path");
+        assert!(event_log_path.ends_with("events.jsonl"));
+        let persisted = crate::harness::workflow::WorkflowRuntimeEventStore::read_recent(
+            event_root.path(),
+            "run_runtime",
+            10,
+        )
+        .expect("scheduler should persist workflow runtime events");
+        assert_eq!(persisted.len(), 3);
+        assert_eq!(persisted[2].event_name, "workflow.replan.requested");
+    }
+
+    #[test]
+    fn workflow_patch_decision_is_recorded_in_runtime_event_chain() {
+        let mut sched = AgentScheduler::new(2);
+        let event_root = tempfile::tempdir().unwrap();
+        sched.set_workflow_event_root(event_root.path());
+        let patch = crate::harness::workflow::WorkflowPatch {
+            patch_id: "patch_wf_runtime_v1_to_v2".to_string(),
+            workflow_id: "wf_runtime".to_string(),
+            from_version: 1,
+            to_version: 2,
+            basis: crate::harness::workflow::PatchBasis {
+                failed_steps: vec!["S001".to_string()],
+                failed_goal_clauses: vec![2],
+            },
+            ops: vec![
+                crate::harness::workflow::WorkflowPatchOp::ReplaceStepStatus {
+                    step_id: "S001".to_string(),
+                    status: crate::harness::workflow::WorkflowStepStatus::Pending,
+                },
+            ],
+            rationale: "Retry verifier step after human review.".to_string(),
+            predicted_impact: serde_json::json!({"risk": "low"}),
+        };
+
+        sched.record_workflow_patch_decision(
+            "wf_runtime",
+            "run_runtime",
+            &patch,
+            false,
+            "Bridge reviewer rejected the retry surface.",
+        );
+
+        let status = sched
+            .orchestrator_status()
+            .expect("scheduler should expose orchestrator status");
+        assert_eq!(status.workflow_event_count, 1);
+        assert_eq!(status.workflow_replan_request_count, 0);
+        assert_eq!(
+            status.recent_workflow_events[0].event_name,
+            "workflow.patch.rejected"
+        );
+        assert_eq!(
+            status.recent_workflow_events[0].attributes["patch_id"],
+            "patch_wf_runtime_v1_to_v2"
+        );
+        let persisted = crate::harness::workflow::WorkflowRuntimeEventStore::read_recent(
+            event_root.path(),
+            "run_runtime",
+            10,
+        )
+        .expect("patch decision should persist to the same workflow runtime ledger");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].event_name, "workflow.patch.rejected");
+    }
+
+    #[test]
+    fn scheduler_prepares_controlled_subagent_jobs_and_records_dispatch_events() {
+        let mut sched = AgentScheduler::new(2);
+        let event_root = tempfile::tempdir().unwrap();
+        sched.set_workflow_event_root(event_root.path());
+        let registry = crate::harness::workflow::AgentRegistry::from_agents(vec![
+            crate::harness::workflow::AgentRegistryEntry {
+                agent_type: "research_subagent".to_string(),
+                allowed_tools: vec![
+                    "vector_search".to_string(),
+                    "arxiv_search".to_string(),
+                ],
+                denied_tools: vec!["Edit".to_string()],
+                default_mode: crate::harness::workflow::WorkflowStepMode::ReadOnly,
+                max_parallelism: 1,
+                can_delegate: false,
+            },
+        ]);
+        let workflow = crate::harness::workflow::WorkflowIr {
+            workflow_id: "wf_dispatch".to_string(),
+            goal_id: "goal_dispatch".to_string(),
+            version: 1,
+            parent_version: None,
+            status: crate::harness::workflow::WorkflowStatus::Running,
+            global_context: serde_json::json!({}),
+            control_policy: crate::harness::workflow::ControlPolicy {
+                max_parallel_steps: 1,
+                replan_on_verification_fail: true,
+                max_patch_chain: 3,
+            },
+            steps: vec![crate::harness::workflow::WorkflowStep {
+                step_id: "S001".to_string(),
+                title: "Expand the evidence frontier".to_string(),
+                kind: crate::harness::workflow::WorkflowStepKind::Research,
+                agent_type: "research_subagent".to_string(),
+                mode: crate::harness::workflow::WorkflowStepMode::ReadOnly,
+                task: "Return a cited evidence packet".to_string(),
+                inputs: serde_json::json!({"keywords": ["bayesian memory"]}),
+                dependencies: vec![],
+                acceptance_criteria: vec!["Every claim has a source".to_string()],
+                goal_alignment: crate::harness::workflow::GoalAlignment {
+                    success_clauses: vec![1],
+                    why_necessary: "Scientist needs frontier evidence".to_string(),
+                },
+                retry_policy: crate::harness::workflow::RetryPolicy {
+                    max_attempts: 2,
+                    backoff_ms: 1000,
+                },
+                status: crate::harness::workflow::WorkflowStepStatus::Ready,
+            }],
+            created_by: "orchestrator@v1".to_string(),
+            created_at: "2026-06-19T00:00:00Z".to_string(),
+        };
+        let run = crate::harness::workflow::WorkflowRunState::for_workflow(
+            "run_dispatch",
+            &workflow,
+            "2026-06-19T00:01:00Z",
+        );
+
+        let jobs = sched
+            .prepare_workflow_subagent_jobs(&workflow, &run, &registry)
+            .unwrap();
+
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].retrieval_job.is_some());
+        assert_eq!(jobs[0].dispatch.step_id, "S001");
+        let events = sched
+            .workflow_runtime_events_for_run("run_dispatch", 10)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_name, "workflow.step.dispatched");
+    }
+
+    #[test]
+    fn workflow_runtime_events_for_run_reads_persisted_ledger() {
+        let mut sched = AgentScheduler::new(2);
+        let event_root = tempfile::tempdir().unwrap();
+        sched.set_workflow_event_root(event_root.path());
+        let patch = crate::harness::workflow::WorkflowPatch {
+            patch_id: "patch_wf_runtime_v1_to_v2".to_string(),
+            workflow_id: "wf_runtime".to_string(),
+            from_version: 1,
+            to_version: 2,
+            basis: crate::harness::workflow::PatchBasis {
+                failed_steps: vec!["S001".to_string()],
+                failed_goal_clauses: vec![2],
+            },
+            ops: vec![
+                crate::harness::workflow::WorkflowPatchOp::ReplaceStepStatus {
+                    step_id: "S001".to_string(),
+                    status: crate::harness::workflow::WorkflowStepStatus::Pending,
+                },
+            ],
+            rationale: "Retry verifier step after human review.".to_string(),
+            predicted_impact: serde_json::json!({}),
+        };
+
+        sched.record_workflow_patch_decision(
+            "wf_runtime",
+            "run_runtime",
+            &patch,
+            true,
+            "Bridge reviewer accepted the retry surface.",
+        );
+
+        let events = sched
+            .workflow_runtime_events_for_run("run_runtime", 5)
+            .expect("scheduler should read persisted workflow runtime events by run");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_name, "workflow.patch.accepted");
+        assert_eq!(
+            sched
+                .workflow_runtime_events_for_run("run_missing", 5)
+                .unwrap(),
+            Vec::<HarnessEvent>::new()
+        );
     }
 
     #[test]

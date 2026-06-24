@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import FeroHaIcon from "./FeroHaIcon";
 
-// Instruction Card Types
+// 指令卡类型
 export type CardType = 
   | "search"
   | "summarize"
@@ -32,37 +32,37 @@ export interface ComboCard {
   description: string;
 }
 
-// Predefined single cards
+// 预置单卡
 const SINGLE_CARDS: InstructionCard[] = [
   {
     id: "search",
     type: "search",
-    label: "Search",
-    description: "Search notes by keyword or semantic similarity",
+    label: "搜索",
+    description: "按关键词或语义相似度搜索笔记",
     params: { query: "", top_k: 5 },
     icon: "Search",
   },
   {
     id: "summarize",
     type: "summarize",
-    label: "Summarize",
-    description: "Generate a summary of selected notes",
+    label: "总结",
+    description: "为选中的笔记生成摘要",
     params: { target: "", style: "bullet" },
     icon: "Pencil",
   },
   {
     id: "organize",
     type: "organize",
-    label: "Organize",
-    description: "Organize and structure notes",
+    label: "整理",
+    description: "整理并结构化笔记",
     params: { target: "", method: "auto" },
     icon: "FolderOpen",
   },
   {
     id: "connect",
     type: "connect",
-    label: "Connect",
-    description: "Find and create connections between notes",
+    label: "连接",
+    description: "寻找并创建笔记之间的联系",
     params: { source: "", target: "" },
     icon: "Link",
   },
@@ -70,22 +70,22 @@ const SINGLE_CARDS: InstructionCard[] = [
     id: "dream",
     type: "dream",
     label: "Dream",
-    description: "Run memory consolidation (NREM/REM/Insight)",
+    description: "运行记忆巩固（NREM/REM/洞察）",
     params: { mode: "full" },
     icon: "Moon",
   },
   {
     id: "research",
     type: "research",
-    label: "Research",
-    description: "Deep research on a topic using AI",
+    label: "研究",
+    description: "使用 AI 对主题进行深度研究",
     params: { topic: "", depth: "standard" },
     icon: "Microscope",
   },
   {
     id: "analyze",
     type: "analyze",
-    label: "Analyze",
+    label: "分析",
     description: "分析文本结构、论证逻辑和关键词提取",
     params: { target: "", content: "" },
     icon: "FileSearch",
@@ -93,41 +93,41 @@ const SINGLE_CARDS: InstructionCard[] = [
   {
     id: "rewrite",
     type: "rewrite",
-    label: "Rewrite",
+    label: "改写",
     description: "按指定风格改写文本内容",
     params: { target: "", content: "", style: "formal" },
     icon: "PenLine",
   },
 ];
 
-// Predefined combo cards
+// 预置组合卡
 const COMBO_CARDS: ComboCard[] = [
   {
     id: "search-summarize",
-    name: "Search & Summarize",
+    name: "搜索并总结",
     cards: [
       SINGLE_CARDS.find((c) => c.id === "search")!,
       SINGLE_CARDS.find((c) => c.id === "summarize")!,
     ],
-    description: "Search for notes and generate a summary",
+    description: "搜索笔记并生成摘要",
   },
   {
     id: "research-organize",
-    name: "Research & Organize",
+    name: "研究并整理",
     cards: [
       SINGLE_CARDS.find((c) => c.id === "research")!,
       SINGLE_CARDS.find((c) => c.id === "organize")!,
     ],
-    description: "Research a topic and organize findings",
+    description: "研究主题并整理发现",
   },
   {
     id: "dream-connect",
-    name: "Dream & Connect",
+    name: "Dream 并连接",
     cards: [
       SINGLE_CARDS.find((c) => c.id === "dream")!,
       SINGLE_CARDS.find((c) => c.id === "connect")!,
     ],
-    description: "Run dream cycle and find connections",
+    description: "运行 Dream 循环并寻找联系",
   },
 ];
 
@@ -175,19 +175,19 @@ export default function InstructionCardPanel({
   return (
     <div className="instruction-card-panel">
       <div className="panel-header">
-        <h3>Instruction Cards</h3>
+        <h3>指令卡</h3>
         <div className="tab-buttons">
           <button
             className={`tab-btn ${activeTab === "single" ? "active" : ""}`}
             onClick={() => setActiveTab("single")}
           >
-            Single
+            单卡
           </button>
           <button
             className={`tab-btn ${activeTab === "combo" ? "active" : ""}`}
             onClick={() => setActiveTab("combo")}
           >
-            Combo
+            组合
           </button>
         </div>
       </div>
@@ -250,7 +250,7 @@ export default function InstructionCardPanel({
             ))}
           </div>
           <button className="execute-btn" onClick={handleExecute}>
-            Execute
+            执行
           </button>
         </div>
       )}

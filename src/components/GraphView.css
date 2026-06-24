@@ -1,0 +1,90 @@
+.graph-view-shell .graph-search-input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 7px 30px 7px 10px;
+  outline: none;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.graph-view-shell .graph-search-input::placeholder {
+  color: var(--control-placeholder);
+}
+
+.graph-view-shell .graph-search-input:focus {
+  border-color: var(--control-border-strong);
+  background: var(--control-bg-hover);
+  box-shadow: var(--control-shadow-focus);
+}
+
+.graph-view-shell canvas {
+  display: block;
+}
+
+.graph-action-button,
+.graph-icon-button,
+.graph-breadcrumb-clear,
+.graph-legend-toggle {
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.graph-action-button:hover,
+.graph-breadcrumb-clear:hover,
+.graph-legend-toggle:hover {
+  border-color: var(--accent-primary) !important;
+  color: var(--accent-primary) !important;
+  background: var(--bg-hover) !important;
+}
+
+.graph-icon-button:hover {
+  color: var(--accent-primary) !important;
+  background: var(--bg-hover) !important;
+}
+
+.graph-legend-toggle[aria-pressed="true"] {
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.graph-action-button:focus-visible,
+.graph-icon-button:focus-visible,
+.graph-breadcrumb-clear:focus-visible,
+.graph-legend-toggle:focus-visible,
+.graph-view-shell .graph-search-input:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .graph-view-shell {
+    padding: 10px !important;
+  }
+
+  .graph-view-header {
+    align-items: stretch !important;
+  }
+
+  .graph-view-header-actions {
+    flex-basis: 100% !important;
+    justify-content: flex-start !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .graph-view-header-actions {
+    gap: 6px !important;
+  }
+
+  .graph-view-header-actions > span {
+    flex: 1 1 100% !important;
+  }
+}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "../hooks/useAppStore";
+import FeroHaIcon from "./FeroHaIcon";
 
 interface QuickSwitcherProps {
   isTauri: boolean;
@@ -222,12 +223,19 @@ export default function QuickSwitcher({ isTauri, open: openProp, onOpenChange }:
   return (
     <div style={styles.backdrop} onClick={closeSwitcher}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.header}>
+          <div style={styles.headerTitleRow}>
+            <FeroHaIcon name="Search" size={16} />
+            <span style={styles.headerTitle}>快速切换</span>
+          </div>
+          <kbd style={styles.shortcut}>Ctrl+P</kbd>
+        </div>
         <input
           ref={inputRef}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search notes..."
+          placeholder="搜索笔记或创建新笔记..."
           style={styles.input}
           autoFocus
         />
@@ -242,19 +250,8 @@ export default function QuickSwitcher({ isTauri, open: openProp, onOpenChange }:
                 }}
                 onClick={() => selectResult(result)}
               >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  style={{ marginRight: 8, flexShrink: 0 }}
-                >
-                  <path d="M8 3v10M3 8h10" />
-                </svg>
-                <span style={{ color: "var(--diff-insert)" }}>Create note: {result.title}</span>
+                <FeroHaIcon name="Plus" size={14} />
+                <span style={{ color: "var(--diff-insert)" }}>创建笔记：{result.title}</span>
               </div>
             ) : (
               <div
@@ -272,8 +269,11 @@ export default function QuickSwitcher({ isTauri, open: openProp, onOpenChange }:
               </div>
             )
           )}
+          {results.length === 0 && !query.trim() && (
+            <div style={styles.empty}>输入关键词搜索或创建笔记</div>
+          )}
           {results.length === 0 && query.trim() && (
-            <div style={styles.empty}>No results</div>
+            <div style={styles.empty}>无结果</div>
           )}
         </div>
       </div>
@@ -288,42 +288,80 @@ const styles: Record<string, React.CSSProperties> = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "rgba(0, 0, 0, 0.3)",
+    backgroundColor: "rgba(0, 0, 0, 0.38)",
     zIndex: 1000,
     display: "flex",
     justifyContent: "center",
-    paddingTop: "15vh",
+    padding: "14vh 16px 16px",
+    backdropFilter: "blur(4px)",
   },
   modal: {
-    width: "500px",
-    maxHeight: "400px",
+    width: "min(620px, 100%)",
+    maxHeight: "min(520px, 78vh)",
     backgroundColor: "var(--bg-primary)",
     border: "1px solid var(--border-color)",
-    borderRadius: "8px",
+    borderRadius: "10px",
     overflow: "hidden",
     alignSelf: "flex-start",
+    boxShadow: "0 24px 70px rgba(0, 0, 0, 0.46)",
+    display: "flex",
+    flexDirection: "column",
+  },
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    padding: "12px 14px",
+    borderBottom: "1px solid var(--border-muted)",
+    backgroundColor: "var(--bg-secondary)",
+  },
+  headerTitleRow: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    minWidth: 0,
+    color: "var(--text-primary)",
+  },
+  headerTitle: {
+    fontSize: "14px",
+    fontWeight: 700,
+    color: "var(--text-primary)",
+  },
+  shortcut: {
+    flex: "0 0 auto",
+    border: "1px solid var(--border-color)",
+    borderRadius: "5px",
+    backgroundColor: "var(--bg-input)",
+    color: "var(--text-secondary)",
+    fontSize: "11px",
+    padding: "2px 7px",
+    fontFamily: "var(--font-mono)",
   },
   input: {
     width: "100%",
-    padding: "12px 16px",
-    backgroundColor: "var(--bg-secondary)",
+    padding: "13px 16px",
+    backgroundColor: "var(--bg-input)",
     color: "var(--text-primary)",
     border: "none",
     borderBottom: "1px solid var(--border-color)",
-    fontSize: "15px",
+    fontSize: "14px",
     outline: "none",
     boxSizing: "border-box",
   },
   results: {
-    maxHeight: "300px",
+    maxHeight: "360px",
     overflowY: "auto",
+    padding: "6px",
   },
   resultItem: {
     display: "flex",
     alignItems: "center",
-    padding: "10px 16px",
+    padding: "10px 12px",
     cursor: "pointer",
     gap: "12px",
+    borderRadius: "7px",
+    minWidth: 0,
   },
   resultItemSelected: {
     backgroundColor: "var(--bg-input)",
@@ -334,8 +372,8 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    flexShrink: 0,
-    maxWidth: "60%",
+    flex: "1 1 auto",
+    minWidth: 0,
   },
   resultPath: {
     fontSize: "12px",
@@ -344,7 +382,8 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     marginLeft: "auto",
-    maxWidth: "40%",
+    maxWidth: "42%",
+    minWidth: 0,
   },
   mark: {
     backgroundColor: "var(--diff-warn)",

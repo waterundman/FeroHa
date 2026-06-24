@@ -33,12 +33,22 @@ impl SnapshotEngine {
         self.store.cleanup_expired(72 * 3600)
     }
 
-    pub fn create_global_snapshot(
+    pub fn create_global_snapshot<R: tauri::Runtime>(
         &self,
         note_id: &str,
         content: &str,
         backlinks: &[String],
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
+    ) -> Result<Snapshot, String> {
+        self.create_global_snapshot_with_emitter(note_id, content, backlinks, Some(app_handle))
+    }
+
+    pub(crate) fn create_global_snapshot_with_emitter<R: tauri::Runtime>(
+        &self,
+        note_id: &str,
+        content: &str,
+        backlinks: &[String],
+        app_handle: Option<&AppHandle<R>>,
     ) -> Result<Snapshot, String> {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let note_title = note_id
@@ -84,7 +94,9 @@ impl SnapshotEngine {
         if let Some(prev_snap) = prev {
             let drift = self.detect_drift(&snapshot, &prev_snap);
             if drift.exceeded_threshold {
-                let _ = app_handle.emit("snapshot-drift", &drift);
+                if let Some(app_handle) = app_handle {
+                    let _ = app_handle.emit("snapshot-drift", &drift);
+                }
                 tracing::info!(
                     "Global drift detected for {}: avg_cosine_distance={:.4}",
                     note_id,
@@ -96,12 +108,22 @@ impl SnapshotEngine {
         Ok(snapshot)
     }
 
-    pub fn create_local_snapshot(
+    pub fn create_local_snapshot<R: tauri::Runtime>(
         &self,
         note_id: &str,
         content: &str,
         selection_range: (usize, usize),
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
+    ) -> Result<Snapshot, String> {
+        self.create_local_snapshot_with_emitter(note_id, content, selection_range, Some(app_handle))
+    }
+
+    pub(crate) fn create_local_snapshot_with_emitter<R: tauri::Runtime>(
+        &self,
+        note_id: &str,
+        content: &str,
+        selection_range: (usize, usize),
+        app_handle: Option<&AppHandle<R>>,
     ) -> Result<Snapshot, String> {
         let timestamp = chrono::Utc::now().timestamp_millis();
         let note_title = note_id
@@ -147,7 +169,9 @@ impl SnapshotEngine {
         if let Some(prev_snap) = prev {
             let drift = self.detect_drift(&snapshot, &prev_snap);
             if drift.exceeded_threshold {
-                let _ = app_handle.emit("snapshot-drift", &drift);
+                if let Some(app_handle) = app_handle {
+                    let _ = app_handle.emit("snapshot-drift", &drift);
+                }
                 tracing::info!(
                     "Local drift detected for {}: avg_cosine_distance={:.4}",
                     note_id,

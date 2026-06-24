@@ -2,6 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tantivy::collector::TopDocs;
@@ -9,7 +10,6 @@ use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 use tantivy_jieba::JiebaTokenizer;
-use tokio::sync::Mutex;
 
 const COMMIT_BATCH_SIZE: usize = 10;
 
@@ -90,7 +90,7 @@ impl SearchEngine {
                     continue;
                 }
                 if path.is_dir() {
-                    if name != ".dualtrack" {
+                    if !name.starts_with('.') && !name.starts_with('_') {
                         self.walk_and_index(&path, count)?;
                     }
                 } else if path.extension().map(|e| e == "md").unwrap_or(false) {
@@ -99,6 +99,9 @@ impl SearchEngine {
                         .unwrap_or(&path)
                         .to_string_lossy()
                         .to_string();
+                    if !crate::fs::watcher::is_content_markdown_path(&rel) {
+                        continue;
+                    }
                     let content = std::fs::read_to_string(&path).unwrap_or_default();
                     let title = extract_title(&content, &rel);
                     let modified = path
@@ -145,7 +148,10 @@ impl SearchEngine {
         doc.add_i64(modified_field, modified);
 
         let path_term = tantivy::Term::from_field_text(path_field, path);
-        let writer = self.writer.blocking_lock();
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "search writer lock poisoned"))?;
         writer.delete_term(path_term);
         writer.add_document(doc)?;
 
@@ -164,7 +170,10 @@ impl SearchEngine {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path_field = self.schema.get_field("path").unwrap();
         let path_term = tantivy::Term::from_field_text(path_field, path);
-        let writer = self.writer.blocking_lock();
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "search writer lock poisoned"))?;
         writer.delete_term(path_term);
 
         let count = self.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -177,8 +186,12 @@ impl SearchEngine {
     }
 
     pub fn commit(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut writer = self.writer.blocking_lock();
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "search writer lock poisoned"))?;
         writer.commit()?;
+        self.reader.reload()?;
         self.pending_count.store(0, Ordering::Relaxed);
         Ok(())
     }
@@ -247,4 +260,51 @@ fn extract_title(content: &str, path: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn index_all_md_files_excludes_internal_and_private_markdown() {
+        let dir = TempDir::new().unwrap();
+        let vault = dir.path();
+        std::fs::write(vault.join("public.md"), "# Public\n\nneedle-public\n").unwrap();
+        std::fs::create_dir_all(vault.join("_private")).unwrap();
+        std::fs::write(vault.join("_private").join("secret.md"), "needle-secret").unwrap();
+        std::fs::create_dir_all(vault.join(".dualtrack").join("research")).unwrap();
+        std::fs::write(
+            vault.join(".dualtrack").join("research").join("result.md"),
+            "needle-internal",
+        )
+        .unwrap();
+
+        let engine = SearchEngine::new(vault).unwrap();
+
+        assert_eq!(engine.index_all_md_files().unwrap(), 1);
+        assert_eq!(
+            engine.search("needle-public", 5).unwrap()[0].path,
+            "public.md"
+        );
+        assert!(engine.search("needle-secret", 5).unwrap().is_empty());
+        assert!(engine.search("needle-internal", 5).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_engine_sync_methods_do_not_panic_inside_tokio_runtime() {
+        let dir = TempDir::new().unwrap();
+        let engine = SearchEngine::new(dir.path()).unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine
+                .add_document("runtime.md", "Runtime", "runtime-safe needle", 1)
+                .unwrap();
+            engine.search("runtime-safe", 5).unwrap()
+        }));
+
+        assert!(result.is_ok(), "search engine panicked inside tokio runtime");
+        assert_eq!(result.unwrap()[0].path, "runtime.md");
+    }
 }

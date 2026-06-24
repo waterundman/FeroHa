@@ -54,11 +54,15 @@ export default function SelectionToolbar({
   }, [visible, onDismiss]);
 
   const actions = [
-    { id: "analyze", label: "Analyze", icon: "FileSearch" },
-    { id: "expand", label: "Expand", icon: "Maximize2" },
-    { id: "rewrite", label: "Rewrite", icon: "PenLine" },
-    { id: "correct", label: "Correct", icon: "SpellCheck" },
+    { id: "analyze", label: "分析", icon: "FileSearch" },
+    { id: "expand", label: "扩展", icon: "Maximize2" },
+    { id: "rewrite", label: "改写", icon: "PenLine" },
+    { id: "correct", label: "校正", icon: "SpellCheck" },
   ];
+
+  if (!visible) {
+    return null;
+  }
 
   return (
     <div

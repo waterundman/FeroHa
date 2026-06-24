@@ -3,6 +3,7 @@ import { useAppStore, type NoteMeta, type GraphData } from "../hooks/useAppStore
 import { showToast } from "./toastBus";
 import TemplatePicker from "./TemplatePicker";
 import FeroHaIcon from "./FeroHaIcon";
+import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface VaultBrowserProps {
   vaultPath: string | null;
@@ -15,10 +16,16 @@ interface VaultBrowserProps {
 interface TreeNode {
   name: string;
   path: string;
+  sourcePath?: string;
   isFolder: boolean;
   depth: number;
   children: TreeNode[];
   meta?: NoteMeta;
+}
+
+interface FolderMeta {
+  path: string;
+  name: string;
 }
 
 interface FileChangedPayload {
@@ -27,8 +34,64 @@ interface FileChangedPayload {
 }
 
 type SortMode = "title-asc" | "title-desc" | "modified-desc" | "modified-asc";
+export type AiWorkspaceZone = "working" | "semantic" | "long_term";
+
+interface AiWorkspaceZoneDefinition {
+  id: AiWorkspaceZone;
+  title: string;
+  description: string;
+  icon: string;
+  accentColor: string;
+  canonicalRoot: string;
+  legacyRoots: string[];
+}
 
 const SKELETON_LINE_WIDTHS = ["68%", "84%", "72%", "91%", "76%"];
+
+const AI_WORKSPACE_ZONES: AiWorkspaceZoneDefinition[] = [
+  {
+    id: "working",
+    title: "Working Memory",
+    description: "当前任务、快照与近期研究上下文",
+    icon: "Activity",
+    accentColor: "#94e2d5",
+    canonicalRoot: ".dualtrack/memory/working/",
+    legacyRoots: [
+      ".dualtrack/research/",
+      ".dualtrack/snapshots/",
+      ".dualtrack/output/",
+      ".dualtrack/bridge/",
+      ".dualtrack/ghosts/",
+    ],
+  },
+  {
+    id: "semantic",
+    title: "Semantic Memory",
+    description: "claims、JSON-LD、MDT 与结构索引",
+    icon: "Network",
+    accentColor: "#cba6f7",
+    canonicalRoot: ".dualtrack/memory/semantic/",
+    legacyRoots: [
+      ".dualtrack/jsonld/",
+      ".dualtrack/mdt/",
+      ".dualtrack/fts/",
+      ".dualtrack/vectors/",
+    ],
+  },
+  {
+    id: "long_term",
+    title: "Long-Term Memory",
+    description: "Dream 巩固洞见与冷却归档",
+    icon: "Archive",
+    accentColor: "#a6adc8",
+    canonicalRoot: ".dualtrack/memory/long_term/",
+    legacyRoots: [
+      ".dualtrack/dream/",
+      ".dualtrack/archive/",
+      ".dualtrack/imports/",
+    ],
+  },
+];
 
 const Icon = ({ d, s = 14 }: { d: string; s?: number }) => (
   <svg width={s} height={s} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -36,8 +99,93 @@ const Icon = ({ d, s = 14 }: { d: string; s?: number }) => (
   </svg>
 );
 
-function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
+function normalizeVaultPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+export function normalizeHumanFolderPath(path: string): string | null {
+  const normalized = normalizeVaultPath(path)
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("/");
+  if (!normalized) return null;
+  const invalid = normalized.split("/").some((part) =>
+    part === "." ||
+    part === ".." ||
+    part.startsWith(".") ||
+    part.startsWith("_")
+  );
+  return invalid ? null : normalized;
+}
+
+export function humanFolderPathFromInput(parentPath: string | undefined, input: string): string | null {
+  const child = normalizeHumanFolderPath(input);
+  if (!child) return null;
+  const parent = parentPath ? normalizeHumanFolderPath(parentPath) : null;
+  return parent ? `${parent}/${child}` : child;
+}
+
+export function isAiWorkspacePath(path: string): boolean {
+  return normalizeVaultPath(path).startsWith(".dualtrack/");
+}
+
+export function aiWorkspaceZoneForPath(path: string): AiWorkspaceZone | null {
+  const normalized = normalizeVaultPath(path);
+  if (!isAiWorkspacePath(normalized)) return null;
+
+  for (const zone of AI_WORKSPACE_ZONES) {
+    if (
+      normalized.startsWith(zone.canonicalRoot) ||
+      zone.legacyRoots.some((root) => normalized.startsWith(root))
+    ) {
+      return zone.id;
+    }
+  }
+
+  return "working";
+}
+
+export function aiWorkspaceDisplayPath(path: string): string {
+  const normalized = normalizeVaultPath(path);
+  const zone = AI_WORKSPACE_ZONES.find((candidate) => normalized.startsWith(candidate.canonicalRoot));
+  if (zone) return normalized.slice(zone.canonicalRoot.length) || zone.id;
+  return normalized.replace(/^\.dualtrack\//, "");
+}
+
+export function mergeVaultNoteLists(humanNotes: NoteMeta[], aiWorkspaceNotes: NoteMeta[]): NoteMeta[] {
+  const merged = new Map<string, NoteMeta>();
+  for (const note of humanNotes) merged.set(note.path, note);
+  for (const note of aiWorkspaceNotes) merged.set(note.path, note);
+  return Array.from(merged.values());
+}
+
+function sourcePathForAiDisplayPath(zone: AiWorkspaceZone, displayPath: string): string {
+  const zoneDef = AI_WORKSPACE_ZONES.find((candidate) => candidate.id === zone);
+  return `${zoneDef?.canonicalRoot ?? ".dualtrack/memory/working/"}${displayPath}`.replace(/\/+$/, "/");
+}
+
+function treeNodeActualPath(node: TreeNode): string {
+  return node.sourcePath ?? node.path;
+}
+
+function folderPathChain(path: string): string[] {
+  const parts = normalizeVaultPath(path).split("/").filter(Boolean);
+  return parts.map((_, index) => `${parts.slice(0, index + 1).join("/")}/`);
+}
+
+function buildTree(
+  notes: NoteMeta[],
+  sortMode: SortMode,
+  options: {
+    pathForNote?: (note: NoteMeta) => string;
+    sourcePathForTreePath?: (treePath: string) => string;
+    folderPaths?: string[];
+  } = {},
+): TreeNode[] {
   const folderMap = new Map<string, TreeNode>();
+  const pathForNote = options.pathForNote ?? ((note: NoteMeta) => note.path);
+  const roots: TreeNode[] = [];
 
   const getFolder = (parts: string[]): TreeNode => {
     let parent: TreeNode | null = null;
@@ -46,9 +194,11 @@ function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
       const depth = i;
       const key = depth === 0 ? segment : `${i > 0 ? `${parts.slice(0, i).join("/")}/` : ""}${segment}`;
       if (!folderMap.has(key)) {
+        const folderPath = key + "/";
         const node: TreeNode = {
           name: segment,
-          path: key + "/",
+          path: folderPath,
+          sourcePath: options.sourcePathForTreePath?.(folderPath),
           isFolder: true,
           depth,
           children: [],
@@ -58,6 +208,8 @@ function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
           if (!parent.children.find(c => c.path === node.path)) {
             parent.children.push(node);
           }
+        } else if (!roots.find(r => r.path === node.path)) {
+          roots.push(node);
         }
         parent = node;
       } else {
@@ -67,15 +219,20 @@ function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
     return parent!;
   };
 
-  const roots: TreeNode[] = [];
-  const rootFolderMap = new Map<string, TreeNode>();
+  for (const folderPath of options.folderPaths ?? []) {
+    const parts = folderPath.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+    if (parts.length > 0) getFolder(parts);
+  }
 
   for (const note of notes) {
-    const parts = note.path.split("/");
+    const treePath = pathForNote(note).replace(/^\/+/, "");
+    const parts = treePath.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
     if (parts.length === 1) {
       roots.push({
         name: note.title,
-        path: note.path,
+        path: treePath,
+        sourcePath: note.path,
         isFolder: false,
         depth: 0,
         children: [],
@@ -84,20 +241,12 @@ function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
     } else {
       const folderParts = parts.slice(0, -1);
       const folderPath = folderParts.join("/");
-
-      if (!rootFolderMap.has(folderParts[0])) {
-        const parentFolder = getFolder(folderParts);
-        rootFolderMap.set(folderParts[0], parentFolder);
-        if (!roots.find(r => r.path === parentFolder.path)) {
-          roots.push(parentFolder);
-        }
-      } else {
-        getFolder(folderParts);
-      }
+      getFolder(folderParts);
 
       const fileNode: TreeNode = {
         name: note.title,
-        path: note.path,
+        path: treePath,
+        sourcePath: note.path,
         isFolder: false,
         depth: folderParts.length,
         children: [],
@@ -144,16 +293,35 @@ function buildTree(notes: NoteMeta[], sortMode: SortMode): TreeNode[] {
   return roots;
 }
 
+export function vaultContextMenuActionIdsForNode(node: { path: string; isFolder: boolean }): string[] {
+  const isAiNode = isAiWorkspacePath(node.path);
+  if (node.isFolder) {
+    return isAiNode
+      ? ["open-readonly", "folder-ai-context", "focus-graph", "copy-path"]
+      : ["new-note", "new-folder", "folder-ai-context", "copy-path"];
+  }
+  return isAiNode
+    ? ["open-readonly", "ask-ai", "focus-graph", "copy-path"]
+    : ["ask-ai", "focus-graph", "copy-path", "favorite", "rename", "delete"];
+}
+
 export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templatePickerOpen: tpo, onTemplatePickerClose }: VaultBrowserProps) {
   const [activeNote, setActiveNote] = useState<string | null>(null);
   const [hoveredNote, setHoveredNote] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortMode>("title-asc");
+  const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingOperations, setLoadingOperations] = useState<Set<string>>(new Set());
+  const [folderPaths, setFolderPaths] = useState<string[]>([]);
+  const [manualVaultPath, setManualVaultPath] = useState("");
   const [recentCollapsed, setRecentCollapsed] = useState(false);
   const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
   const [humanCollapsed, setHumanCollapsed] = useState(false);
-  const [aiCollapsed, setAiCollapsed] = useState(true);
+  const [aiZoneCollapsed, setAiZoneCollapsed] = useState<Record<AiWorkspaceZone, boolean>>({
+    working: false,
+    semantic: false,
+    long_term: false,
+  });
   const [isTemplatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [newNoteFolder, setNewNoteFolder] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -174,18 +342,56 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
   const setFilterTags = useAppStore((s) => s.setFilterTags);
 
   const filteredNotes = useMemo(() => {
-    if (filterTags.length === 0) return storeNotes;
-    return storeNotes.filter(note => {
+    const tagFiltered = filterTags.length === 0 ? storeNotes : storeNotes.filter(note => {
       const noteTags = note.tags || [];
       return filterTags.every(ft => noteTags.includes(ft));
     });
-  }, [storeNotes, filterTags]);
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return tagFiltered;
+    return tagFiltered.filter((note) =>
+      note.title.toLowerCase().includes(query) ||
+      note.path.toLowerCase().includes(query) ||
+      note.tags?.some((tag) => tag.toLowerCase().includes(query))
+    );
+  }, [storeNotes, filterTags, searchQuery]);
 
-  const humanNotes = useMemo(() => filteredNotes.filter(n => !n.path.startsWith(".dualtrack/")), [filteredNotes]);
-  const aiNotes = useMemo(() => filteredNotes.filter(n => n.path.startsWith(".dualtrack/")), [filteredNotes]);
+  const humanNotes = useMemo(() => filteredNotes.filter(n => !isAiWorkspacePath(n.path)), [filteredNotes]);
+  const aiNotes = useMemo(() => filteredNotes.filter(n => isAiWorkspacePath(n.path)), [filteredNotes]);
+  const humanNoteTotal = useMemo(() => storeNotes.filter(n => !isAiWorkspacePath(n.path)).length, [storeNotes]);
+  const aiNoteTotal = useMemo(() => storeNotes.filter(n => isAiWorkspacePath(n.path)).length, [storeNotes]);
 
-  const humanTree = useMemo(() => buildTree(humanNotes, sortBy), [humanNotes, sortBy]);
-  const aiTree = useMemo(() => buildTree(aiNotes, sortBy), [aiNotes, sortBy]);
+  const filteredFolderPaths = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return folderPaths;
+
+    const noteFolderAncestors = new Set<string>();
+    for (const note of humanNotes) {
+      const parts = normalizeVaultPath(note.path).split("/").filter(Boolean);
+      for (let index = 1; index < parts.length; index += 1) {
+        noteFolderAncestors.add(parts.slice(0, index).join("/"));
+      }
+    }
+
+    return folderPaths.filter((folderPath) =>
+      folderPath.toLowerCase().includes(query) || noteFolderAncestors.has(folderPath)
+    );
+  }, [folderPaths, humanNotes, searchQuery]);
+
+  const humanTree = useMemo(
+    () => buildTree(humanNotes, sortBy, { folderPaths: filteredFolderPaths }),
+    [humanNotes, sortBy, filteredFolderPaths],
+  );
+  const hasVisibleVaultItems = filteredNotes.length > 0 || filteredFolderPaths.length > 0;
+  const aiZoneTrees = useMemo(() => {
+    return AI_WORKSPACE_ZONES.reduce((acc, zone) => {
+      const zoneNotes = aiNotes.filter((note) => aiWorkspaceZoneForPath(note.path) === zone.id);
+      acc[zone.id] = buildTree(zoneNotes, sortBy, {
+        pathForNote: (note) => aiWorkspaceDisplayPath(note.path),
+        sourcePathForTreePath: (treePath) => sourcePathForAiDisplayPath(zone.id, treePath),
+      });
+      return acc;
+    }, {} as Record<AiWorkspaceZone, TreeNode[]>);
+  }, [aiNotes, sortBy]);
 
   const favoriteMeta = useMemo(() => {
     return favorites
@@ -198,8 +404,13 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     setIsLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const noteList = await invoke<NoteMeta[]>("list_notes");
-      setStoreNotes(noteList);
+      const [humanNoteList, humanFolderList, aiWorkspaceNoteList] = await Promise.all([
+        invoke<NoteMeta[]>("list_notes"),
+        invoke<FolderMeta[]>("list_folders").catch(() => [] as FolderMeta[]),
+        invoke<NoteMeta[]>("list_ai_workspace_files").catch(() => [] as NoteMeta[]),
+      ]);
+      setStoreNotes(mergeVaultNoteLists(humanNoteList, aiWorkspaceNoteList));
+      setFolderPaths(humanFolderList.map((folder) => normalizeVaultPath(folder.path)));
       const graph = await invoke<GraphData>("get_graph");
       setGraph(graph);
       const tags = await invoke<{ name: string; count: number }[]>("list_tags");
@@ -225,9 +436,14 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
       } catch {
         // Browser mode
       }
-    };
-    setupListener();
-    return () => { unlisten?.(); };
+  };
+  setupListener();
+  return () => { unlisten?.(); };
+  }, [isTauri, vaultPath, refreshNotes]);
+
+  useEffect(() => {
+    if (!isTauri || !vaultPath) return;
+    refreshNotes();
   }, [isTauri, vaultPath, refreshNotes]);
 
   const handleOpenVault = async () => {
@@ -245,10 +461,33 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
         }
       } catch (e) {
         console.error("Failed to open vault:", e);
-        showToast("error", "Failed to open vault");
+        showToast("error", "打开库失败");
       }
     } else {
       onSelectVault("/demo-vault");
+    }
+  };
+
+  const handleOpenManualVault = async () => {
+    const selected = manualVaultPath.trim();
+    if (!selected) return;
+
+    if (isTauri) {
+      setIsLoading(true);
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("open_vault", { path: selected });
+        onSelectVault(selected);
+        setManualVaultPath("");
+        refreshNotes();
+      } catch (e) {
+        console.error("Failed to open vault path:", e);
+        showToast("error", `Failed to open vault: ${selected}`);
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      onSelectVault(selected);
     }
   };
 
@@ -267,7 +506,7 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
 
   const handleNoteClick = (note: TreeNode) => {
     if (note.meta) {
-      openNoteInEditor(note.path, note.name);
+      openNoteInEditor(treeNodeActualPath(note), note.name);
     }
   };
 
@@ -298,7 +537,7 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
         showToast("success", `Created ${fullPath}`);
       } catch (e) {
         console.error("Failed to create note:", e);
-        showToast("error", `Failed to create ${fullPath}`);
+        showToast("error", `创建失败：${fullPath}`);
       }
     } else {
       const newNote: NoteMeta = {
@@ -325,9 +564,24 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     });
   };
 
-  const handleDeleteNote = async (notePath: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`Delete "${notePath}"?`)) return;
+  const removeDeletedNoteFromWorkspace = (notePath: string) => {
+    const store = useAppStore.getState();
+    const tabIndex = store.tabs.findIndex((tab) => tab.path === notePath);
+    if (tabIndex >= 0) {
+      store.closeTab(tabIndex);
+    }
+    useAppStore.setState((state) => ({
+      currentNote: state.currentNote?.path === notePath ? null : state.currentNote,
+      isDirty: state.currentNote?.path === notePath ? false : state.isDirty,
+      closedTabs: state.closedTabs.filter((tab) => tab.path !== notePath),
+      favorites: state.favorites.filter((path) => path !== notePath),
+      recentNotes: state.recentNotes.filter((path) => path !== notePath),
+    }));
+  };
+
+  const handleDeleteNote = async (notePath: string, e?: Pick<React.MouseEvent, "stopPropagation">) => {
+    e?.stopPropagation();
+    if (!confirm(`删除 "${notePath}"？`)) return;
 
     const operationId = `delete-${notePath}`;
     setLoadingOperations(prev => new Set(prev).add(operationId));
@@ -338,15 +592,18 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
         await invoke("delete_note", { path: notePath });
         setStoreNotes(useAppStore.getState().notes.filter((n) => n.path !== notePath));
         if (activeNote === notePath) setActiveNote(null);
-        showToast("success", `Deleted ${notePath}`);
+        removeDeletedNoteFromWorkspace(notePath);
+        refreshNotes();
+        showToast("success", `已删除 ${notePath}`);
       } catch (e) {
         console.error("Failed to delete note:", e);
-        showToast("error", `Failed to delete ${notePath}`);
+        showToast("error", `删除失败：${notePath}`);
       }
     } else {
       setStoreNotes(useAppStore.getState().notes.filter((n) => n.path !== notePath));
       if (activeNote === notePath) setActiveNote(null);
-      showToast("success", `Deleted ${notePath}`);
+      removeDeletedNoteFromWorkspace(notePath);
+      showToast("success", `已删除 ${notePath}`);
     }
 
     setLoadingOperations(prev => {
@@ -356,12 +613,30 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     });
   };
 
+  const addVisibleFolderPath = (folderPath: string) => {
+    const normalized = normalizeHumanFolderPath(folderPath);
+    if (!normalized) return;
+    setFolderPaths((current) => (
+      current.includes(normalized) ? current : [...current, normalized]
+    ));
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      for (const segment of folderPathChain(normalized)) {
+        next.add(segment);
+      }
+      return next;
+    });
+  };
+
   const handleCreateFolder = async (prefix?: string) => {
     setContextMenu(null);
-    const name = prompt("New folder name:");
+    const name = prompt("新文件夹名称：");
     if (!name) return;
-    const safeName = name.replace(/[^a-zA-Z0-9-_]/g, "-");
-    const folderPath = prefix ? `${prefix}/${safeName}` : safeName;
+    const folderPath = humanFolderPathFromInput(prefix, name);
+    if (!folderPath) {
+      showToast("error", "文件夹名称不能是隐藏目录、内部目录或上级路径");
+      return;
+    }
 
     const operationId = `createFolder-${folderPath}`;
     setLoadingOperations(prev => new Set(prev).add(operationId));
@@ -370,12 +645,16 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("create_folder", { path: folderPath });
+        addVisibleFolderPath(folderPath);
         refreshNotes();
         showToast("success", `Created folder ${folderPath}`);
       } catch (e) {
         console.error("Failed to create folder:", e);
-        showToast("error", `Failed to create folder ${folderPath}`);
+        showToast("error", `创建文件夹失败：${folderPath}`);
       }
+    } else {
+      addVisibleFolderPath(folderPath);
+      showToast("success", `Created folder ${folderPath}`);
     }
 
     setLoadingOperations(prev => {
@@ -417,10 +696,10 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("rename_note", { oldPath: editingPath, newPath });
         refreshNotes();
-        showToast("success", `Renamed to ${newPath}`);
+        showToast("success", `已重命名为 ${newPath}`);
       } catch (e) {
         console.error("Failed to rename note:", e);
-        showToast("error", `Failed to rename: ${e}`);
+        showToast("error", `重命名失败：${e}`);
       }
     }
     setEditingPath(null);
@@ -448,6 +727,109 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     setContextMenu({ x: e.clientX, y: e.clientY, item });
   };
 
+  const openTaskIntakeForPath = (path: string) => {
+    useAppStore.getState().setActivePanel("task-intake");
+    showToast("info", `已将 ${path} 作为 AI 任务上下文`);
+  };
+
+  const focusPathInGraph = (path: string) => {
+    const store = useAppStore.getState();
+    store.addToNavigationPath(path);
+    store.setActivePanel("graph");
+    showToast("info", `图谱聚焦：${path}`);
+  };
+
+  const copyPath = (path: string) => {
+    void navigator.clipboard?.writeText(path);
+    showToast("info", `已复制路径：${path}`);
+  };
+
+  const openReadOnlyNote = (item: TreeNode) => {
+    if (!item.meta) return;
+    const itemPath = treeNodeActualPath(item);
+    openNoteInEditor(itemPath, item.name);
+    showToast("info", `AI 工作区以只读方式打开：${itemPath}`);
+  };
+
+  const contextMenuItemsForNode = (item: TreeNode): ContextMenuItem[] => {
+    const itemPath = treeNodeActualPath(item);
+    const folderPath = itemPath.replace(/\/$/, "");
+    const builders: Record<string, () => ContextMenuItem> = {
+      "open-readonly": () => ({
+        id: "open-readonly",
+        label: item.isFolder ? "展开查看" : "只读打开",
+        icon: item.isFolder ? "FolderOpen" : "BookOpen",
+        onSelect: () => {
+          if (item.isFolder) toggleFolder(item.path);
+          else openReadOnlyNote(item);
+        },
+      }),
+      "new-note": () => ({
+        id: "new-note",
+        label: "新建笔记",
+        icon: "FilePlus",
+        onSelect: () => {
+          setNewNoteFolder(folderPath);
+          setTemplatePickerOpen(true);
+        },
+      }),
+      "new-folder": () => ({
+        id: "new-folder",
+        label: "新建文件夹",
+        icon: "FolderPlus",
+        onSelect: () => handleCreateFolder(folderPath),
+      }),
+      "folder-ai-context": () => ({
+        id: "folder-ai-context",
+        label: "作为 AI 任务上下文",
+        icon: "Send",
+        onSelect: () => openTaskIntakeForPath(folderPath),
+      }),
+      "ask-ai": () => ({
+        id: "ask-ai",
+        label: "以此向 AI 提任务",
+        icon: "Send",
+        onSelect: () => openTaskIntakeForPath(itemPath),
+      }),
+      "focus-graph": () => ({
+        id: "focus-graph",
+        label: "在图谱中聚焦",
+        icon: "GitGraph",
+        onSelect: () => focusPathInGraph(itemPath),
+      }),
+      "copy-path": () => ({
+        id: "copy-path",
+        label: "复制路径",
+        icon: "Copy",
+        shortcut: "Ctrl+C",
+        onSelect: () => copyPath(itemPath),
+      }),
+      favorite: () => ({
+        id: "favorite",
+        label: favorites.includes(itemPath) ? "取消收藏" : "收藏",
+        icon: "Star",
+        onSelect: () => toggleFavorite(itemPath),
+      }),
+      rename: () => ({
+        id: "rename",
+        label: "重命名",
+        icon: "Pencil",
+        onSelect: () => startRename(item),
+      }),
+      delete: () => ({
+        id: "delete",
+        label: "删除",
+        icon: "Trash2",
+        variant: "danger",
+        onSelect: () => { void handleDeleteNote(itemPath); },
+      }),
+    };
+
+    return vaultContextMenuActionIdsForNode({ path: itemPath, isFolder: item.isFolder })
+      .map((id) => builders[id]?.())
+      .filter((menuItem): menuItem is ContextMenuItem => Boolean(menuItem));
+  };
+
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
     const escKey = (e: KeyboardEvent) => { if (e.key === "Escape") setContextMenu(null); };
@@ -461,13 +843,15 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
 
   const renderTreeNode = (node: TreeNode): React.ReactNode => {
     const isExpanded = expandedFolders.has(node.path);
-    const isActive = node.meta && node.path === activeNote;
-    const isHovered = node.path === (hoveredNote === null ? undefined : hoveredNote);
+    const actualPath = treeNodeActualPath(node);
+    const isActive = node.meta && actualPath === activeNote;
+    const isHovered = actualPath === (hoveredNote === null ? undefined : hoveredNote);
     const depthIndent = node.depth * 14;
+    const isAiNode = isAiWorkspacePath(actualPath);
 
     if (node.isFolder) {
       return (
-        <div key={node.path}>
+        <div key={actualPath}>
           <div
             style={{
               ...styles.treeFolder,
@@ -498,17 +882,17 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     // File node
     return (
       <div
-        key={node.path}
+        key={actualPath}
         style={{
           ...styles.fileItem,
           ...(isActive ? styles.fileItemActive : {}),
           ...(isHovered ? styles.fileItemHovered : {}),
-          ...(loadingOperations.has(`delete-${node.path}`) ? styles.fileItemLoading : {}),
+          ...(loadingOperations.has(`delete-${actualPath}`) ? styles.fileItemLoading : {}),
           paddingLeft: `${8 + depthIndent}px`,
         }}
         onClick={() => handleNoteClick(node)}
-        onDoubleClick={() => startRename(node)}
-        onMouseEnter={() => setHoveredNote(node.path)}
+        onDoubleClick={() => { if (!isAiNode) startRename(node); }}
+        onMouseEnter={() => setHoveredNote(actualPath)}
         onMouseLeave={() => setHoveredNote(null)}
         onContextMenu={(e) => handleContextMenu(e, node)}
       >
@@ -532,22 +916,22 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
             <button
               style={{
                 ...styles.starBtn,
-                "--icon-default": favorites.includes(node.path) ? "var(--diff-warn)" : "var(--text-muted)",
-                opacity: favorites.includes(node.path) || hoveredNote === node.path ? 1 : 0,
+                color: favorites.includes(actualPath) ? "var(--diff-warn)" : "var(--text-muted)",
+                opacity: favorites.includes(actualPath) || hoveredNote === actualPath ? 1 : 0,
               } as React.CSSProperties}
-              onClick={(e) => { e.stopPropagation(); toggleFavorite(node.path); }}
-              title={favorites.includes(node.path) ? "Unfavorite" : "Favorite"}
+              onClick={(e) => { e.stopPropagation(); toggleFavorite(actualPath); }}
+              title={favorites.includes(actualPath) ? "Unfavorite" : "Favorite"}
             >
               <FeroHaIcon name="Star" size={12} />
             </button>
-            {loadingOperations.has(`delete-${node.path}`) ? (
+            {loadingOperations.has(`delete-${actualPath}`) ? (
               <span style={styles.spinner}><FeroHaIcon name="Loader" size={14} className="animate-spin" /></span>
             ) : (
-              (hoveredNote === node.path) && (
+              (hoveredNote === actualPath && !isAiNode) && (
                 <button
                   style={styles.deleteBtn}
-                  onClick={(e) => handleDeleteNote(node.path, e)}
-                  title="Delete note"
+                  onClick={(e) => handleDeleteNote(actualPath, e)}
+                  title="删除笔记"
                 >
                   <FeroHaIcon name="X" size={12} />
                 </button>
@@ -559,18 +943,29 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
     );
   };
 
-  const renderTreeSection = (tree: TreeNode[], sectionTitle: string, collapsed: boolean, setCollapsed: (v: boolean) => void, iconName: string, accentColor: string) => {
-    if (tree.length === 0) return null;
+  const renderTreeSection = (
+    tree: TreeNode[],
+    sectionTitle: string,
+    collapsed: boolean,
+    setCollapsed: (v: boolean) => void,
+    iconName: string,
+    accentColor: string,
+    testId?: string,
+    description?: string,
+    showWhenEmpty = false,
+  ) => {
+    if (tree.length === 0 && !showWhenEmpty) return null;
     const totalFiles = tree.reduce((acc, node) => {
       const count = (n: TreeNode): number => n.isFolder ? n.children.reduce((s, c) => s + count(c), 0) : 1;
       return acc + count(node);
     }, 0);
 
     return (
-      <div style={{ marginBottom: "4px" }}>
+      <div key={testId ?? sectionTitle} style={{ marginBottom: "4px" }} data-testid={testId}>
         <div
           style={styles.sectionHeader}
           onClick={() => setCollapsed(!collapsed)}
+          title={description}
         >
           <span style={styles.recentChevron}>
             <FeroHaIcon name={collapsed ? "ChevronRight" : "ChevronDown"} size={14} />
@@ -579,9 +974,14 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
           <span style={{ ...styles.sectionTitle, color: accentColor }}>{sectionTitle}</span>
           <span style={styles.sectionBadge}>{totalFiles}</span>
         </div>
+        {description && !collapsed && (
+          <div style={styles.sectionDescription}>{description}</div>
+        )}
         {!collapsed && (
           <div style={styles.sectionList}>
-            {tree.map(renderTreeNode)}
+            {tree.length > 0 ? tree.map(renderTreeNode) : (
+              <div style={styles.emptySection}>No files yet</div>
+            )}
           </div>
         )}
       </div>
@@ -589,10 +989,10 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
   };
 
   const sortLabels: Record<SortMode, string> = {
-    "title-asc": "Title A-Z",
-    "title-desc": "Title Z-A",
-    "modified-desc": "Modified (newest)",
-    "modified-asc": "Modified (oldest)",
+    "title-asc": "标题 A-Z",
+    "title-desc": "标题 Z-A",
+    "modified-desc": "修改时间（最新）",
+    "modified-asc": "修改时间（最旧）",
   };
 
   return (
@@ -605,8 +1005,11 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
         .animate-spin { animation: spin 1s linear infinite; }
       `}</style>
       <div style={styles.header}>
-        <span style={styles.title}>Vault</span>
-        <button style={styles.iconBtn} onClick={handleOpenVault} title={vaultPath ? "Switch Vault" : "Open Vault"}>
+        <div style={styles.titleBlock}>
+          <span style={styles.title}>笔记库</span>
+          <span style={styles.subtitle}>人类面可写，AI 工作区只读</span>
+        </div>
+        <button style={styles.iconBtn} onClick={handleOpenVault} title={vaultPath ? "切换笔记库" : "打开笔记库"}>
           <Icon d="M2 5v8h12V7H7L5 5H2z" />
         </button>
       </div>
@@ -616,26 +1019,70 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
       )}
 
       {vaultPath && (
-        <div style={styles.actions}>
-          <button style={styles.iconBtn} onClick={() => { setNewNoteFolder(null); setTemplatePickerOpen(true); }} title="New Note">
-            <Icon d="M9 1H4v14h8V5l-3-4z M9 1v4h4" />
+        <div style={styles.summaryRow} aria-label="笔记库摘要">
+          <span style={styles.summaryChip}>人类笔记 {humanNoteTotal}</span>
+          <span style={styles.summaryChip}>文件夹 {folderPaths.length}</span>
+          <span style={styles.summaryChipMuted}>AI 只读 {aiNoteTotal}</span>
+        </div>
+      )}
+
+      {isTauri && !vaultPath && (
+        <div style={styles.manualVaultOpen}>
+          <input
+            className="feroha-search"
+            style={styles.manualVaultInput}
+            value={manualVaultPath}
+            onChange={(e) => setManualVaultPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void handleOpenManualVault();
+              }
+            }}
+            placeholder="Vault path"
+            aria-label="Vault path"
+          />
+          <button
+            style={styles.manualVaultBtn}
+            onClick={() => { void handleOpenManualVault(); }}
+            disabled={!manualVaultPath.trim() || isLoading}
+          >
+            Open
           </button>
-          <button style={styles.iconBtn} onClick={() => handleCreateFolder()} title="New Folder">
-            <Icon d="M2 4h4l2 2h6v7H2V4z M8 9v4 M6 11h4" />
+        </div>
+      )}
+
+      {vaultPath && (
+        <div style={styles.actions}>
+          <button style={styles.primaryActionBtn} onClick={() => { setNewNoteFolder(null); setTemplatePickerOpen(true); }} title="新建笔记">
+            <FeroHaIcon name="FilePlus" size={13} />
+            <span>笔记</span>
+          </button>
+          <button style={styles.actionBtnWithIcon} onClick={() => handleCreateFolder()} title="新建文件夹">
+            <FeroHaIcon name="FolderPlus" size={13} />
+            <span>文件夹</span>
+          </button>
+          <button style={styles.iconBtn} onClick={refreshNotes} title="刷新">
+            <FeroHaIcon name="RefreshCw" size={14} />
           </button>
           <select
             style={styles.sortSelect}
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as SortMode)}
-            title="Sort order"
+            title="排序方式"
           >
             {Object.entries(sortLabels).map(([key, label]) => (
               <option key={key} value={key}>{label}</option>
             ))}
           </select>
-          <button style={styles.iconBtn} onClick={refreshNotes} title="Refresh">
-            ⟳
-          </button>
+          <input
+            className="feroha-search"
+            style={styles.searchInput}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索笔记、文件夹或标签"
+            aria-label="搜索笔记、文件夹或标签"
+          />
         </div>
       )}
 
@@ -653,13 +1100,13 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
                   <span style={styles.recentChevron}>
                     <FeroHaIcon name={recentCollapsed ? "ChevronRight" : "ChevronDown"} size={14} />
                   </span>
-                  <span style={styles.recentTitle}>Recent</span>
+                  <span style={styles.recentTitle}>最近</span>
                   <button
                     style={styles.recentClearBtn}
                     onClick={(e) => { e.stopPropagation(); clearRecentNotes(); }}
-                    title="Clear recent notes"
+                    title="清除最近笔记"
                   >
-                    Clear
+                    清除
                   </button>
                 </div>
                 {!recentCollapsed && (
@@ -689,7 +1136,7 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
             )}
             {filterTags.length > 0 && (
               <div style={styles.filterBar}>
-                <span style={styles.filterLabel}>Filtering:</span>
+                <span style={styles.filterLabel}>筛选：</span>
                 {filterTags.map((tag) => (
                   <span key={tag} style={styles.filterTag}>#{tag}</span>
                 ))}
@@ -697,7 +1144,7 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
                   style={styles.filterClearBtn}
                   onClick={() => setFilterTags([])}
                 >
-                  Clear
+                  清除
                 </button>
               </div>
             )}
@@ -710,16 +1157,16 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
                   <span style={styles.recentChevron}>
                     <FeroHaIcon name={favoritesCollapsed ? "ChevronRight" : "ChevronDown"} size={14} />
                   </span>
-                  <span style={{ "--icon-default": "var(--diff-warn)" } as React.CSSProperties}>
+                  <span style={{ color: "var(--diff-warn)" }}>
                     <FeroHaIcon name="Star" size={14} />
                   </span>
-                  <span style={styles.recentTitle}>Favorites</span>
+                  <span style={styles.recentTitle}>收藏</span>
                   <span style={styles.sectionBadge}>{favoriteMeta.length}</span>
                 </div>
                 {!favoritesCollapsed && (
                   <div style={styles.recentList}>
                     {favoriteMeta.length === 0 ? (
-                      <div style={styles.empty}>Star a note to pin it here</div>
+                      <div style={styles.empty}>给笔记加星后会固定在这里</div>
                     ) : (
                       favoriteMeta.map((meta) => {
                         const title = meta.title || meta.path.split("/").pop()?.replace(/\.md$/, "") || meta.path;
@@ -746,80 +1193,41 @@ export default function VaultBrowser({ vaultPath, onSelectVault, isTauri, templa
             )}
             {renderTreeSection(
               humanTree,
-              "Human Notes",
+              "人类笔记",
               humanCollapsed,
               setHumanCollapsed,
               "User",
-              "var(--text-primary)"
+              "var(--text-primary)",
+              "human-notes-section",
+              "可写 Markdown 文件与空文件夹",
+              true,
             )}
-            {renderTreeSection(
-              aiTree,
-              "AI Workspace",
-              aiCollapsed,
-              setAiCollapsed,
-              "Bot",
-              "var(--accent-primary)"
+            {AI_WORKSPACE_ZONES.map((zone) =>
+              renderTreeSection(
+                aiZoneTrees[zone.id],
+                zone.title,
+                aiZoneCollapsed[zone.id],
+                (collapsed) => setAiZoneCollapsed((current) => ({ ...current, [zone.id]: collapsed })),
+                zone.icon,
+                zone.accentColor,
+                `ai-zone-${zone.id}`,
+                zone.description,
+                true,
+              )
             )}
-            {filteredNotes.length === 0 && vaultPath && (
-              <div style={styles.empty}>{filterTags.length > 0 ? "No notes match all selected tags" : "No .md files found"}</div>
+            {!hasVisibleVaultItems && vaultPath && (
+              <div style={styles.empty}>{filterTags.length > 0 ? "没有匹配全部标签的笔记" : "未找到 .md 文件"}</div>
             )}
           </>
         )}
       </div>
 
       {contextMenu && (
-        <div
-          className="feroha-context-menu"
-          style={{
-            position: "fixed",
-            left: contextMenu.x,
-            top: contextMenu.y,
-            zIndex: 1000,
-          }}
-        >
-          {contextMenu.item.isFolder ? (
-            <>
-              <div
-                className="feroha-context-menu-item"
-                onClick={() => {
-                  const folderPath = contextMenu.item.path.replace(/\/$/, "");
-                  setNewNoteFolder(folderPath);
-                  setTemplatePickerOpen(true);
-                  setContextMenu(null);
-                }}
-              >
-                New Note
-              </div>
-              <div
-                className="feroha-context-menu-item"
-                onClick={() => handleCreateFolder(contextMenu.item.path.replace(/\/$/, ""))}
-              >
-                New Folder
-              </div>
-            </>
-          ) : (
-            <>
-              <div
-                className="feroha-context-menu-item"
-                onClick={() => {
-                  startRename(contextMenu.item);
-                  setContextMenu(null);
-                }}
-              >
-                Rename
-              </div>
-              <div
-                className="feroha-context-menu-item"
-                onClick={(e) => {
-                  handleDeleteNote(contextMenu.item.path, e as unknown as React.MouseEvent);
-                  setContextMenu(null);
-                }}
-              >
-                Delete
-              </div>
-            </>
-          )}
-        </div>
+        <ContextMenu
+          point={{ x: contextMenu.x, y: contextMenu.y }}
+          items={contextMenuItemsForNode(contextMenu.item)}
+          onClose={() => setContextMenu(null)}
+        />
       )}
 
       <TemplatePicker
@@ -875,16 +1283,27 @@ const skeletonStyles: Record<string, React.CSSProperties> = {
 };
 
 const styles: Record<string, React.CSSProperties> = {
-  container: { padding: "12px", height: "100%", display: "flex", flexDirection: "column" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" },
+  container: { padding: "12px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", overflow: "hidden" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px", minWidth: 0 },
+  titleBlock: { display: "flex", flexDirection: "column", minWidth: 0, gap: "1px" },
   title: { fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" },
-  iconBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: "26px", height: "26px", backgroundColor: "transparent", color: "var(--text-secondary)", border: "none", borderRadius: "4px", cursor: "pointer", transition: "all 0.15s" },
+  subtitle: { fontSize: "10px", color: "var(--text-muted)", whiteSpace: "nowrap" as const, overflow: "hidden" as const, textOverflow: "ellipsis" as const },
+  iconBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: "28px", height: "28px", backgroundColor: "transparent", color: "var(--text-secondary)", border: "1px solid transparent", borderRadius: "4px", cursor: "pointer", transition: "all 0.15s", flexShrink: 0 },
   path: { fontSize: "10px", color: "var(--text-muted)", marginBottom: "4px", wordBreak: "break-all" as const, padding: "4px 6px", backgroundColor: "var(--bg-primary)", borderRadius: "4px" },
-  actions: { display: "flex", gap: "2px", marginBottom: "8px", alignItems: "center" },
+  summaryRow: { display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" as const, marginBottom: "8px", minWidth: 0 },
+  summaryChip: { fontSize: "10px", color: "var(--text-secondary)", border: "1px solid var(--border-color)", borderRadius: "999px", padding: "2px 6px", backgroundColor: "var(--bg-primary)" },
+  summaryChipMuted: { fontSize: "10px", color: "var(--text-muted)", border: "1px solid var(--border-muted)", borderRadius: "999px", padding: "2px 6px", backgroundColor: "transparent" },
+  manualVaultOpen: { display: "flex", gap: "4px", marginBottom: "8px", alignItems: "center", minWidth: 0 },
+  manualVaultInput: { flex: 1, minWidth: 0, height: "28px", fontSize: "12px" },
+  manualVaultBtn: { height: "28px", padding: "0 8px", backgroundColor: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", fontSize: "12px", flexShrink: 0 },
+  actions: { display: "flex", gap: "4px", marginBottom: "8px", alignItems: "center", flexWrap: "wrap" as const, minWidth: 0 },
   actionBtn: { padding: "2px 6px", backgroundColor: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", fontSize: "10px" },
-  sortSelect: { fontSize: "10px", backgroundColor: "var(--bg-input)", color: "var(--text-secondary)", border: "1px solid var(--border-color)", borderRadius: "4px", padding: "2px 4px", height: "22px", cursor: "pointer", outline: "none" },
-  fileList: { flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: "2px" },
-  fileItem: { display: "flex", alignItems: "center", gap: "6px", padding: "4px 8px", borderRadius: "4px", cursor: "pointer", fontSize: "13px", color: "var(--text-secondary)", position: "relative" as const },
+  primaryActionBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "4px", height: "28px", padding: "0 9px", backgroundColor: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--control-border-strong)", borderRadius: "4px", cursor: "pointer", fontSize: "12px", flexShrink: 0 },
+  actionBtnWithIcon: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "4px", height: "28px", padding: "0 8px", backgroundColor: "transparent", color: "var(--text-secondary)", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", fontSize: "12px", flexShrink: 0 },
+  sortSelect: { flex: "1 1 110px", minWidth: 0, fontSize: "10px", backgroundColor: "var(--control-bg)", color: "var(--text-secondary)", border: "1px solid var(--control-border)", borderRadius: "4px", padding: "2px 4px", height: "24px", cursor: "pointer", outline: "none" },
+  searchInput: { flex: "1 1 100%", minWidth: "120px", height: "28px", fontSize: "12px" },
+  fileList: { flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: "2px" },
+  fileItem: { display: "flex", alignItems: "center", gap: "6px", minHeight: "26px", minWidth: 0, padding: "4px 8px", borderRadius: "4px", cursor: "pointer", fontSize: "13px", color: "var(--text-secondary)", position: "relative" as const },
   fileItemActive: { backgroundColor: "var(--bg-input)", color: "var(--text-primary)" },
   fileItemHovered: { backgroundColor: "var(--border-color)22" },
   fileItemLoading: { opacity: 0.6, pointerEvents: "none" as const },
@@ -894,20 +1313,22 @@ const styles: Record<string, React.CSSProperties> = {
   starBtn: { padding: "0 2px", backgroundColor: "transparent", border: "none", cursor: "pointer", fontSize: "12px", lineHeight: "1", transition: "opacity 0.15s" },
   spinner: { fontSize: "12px", animation: "spin 1s linear infinite" },
   empty: { fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic", padding: "8px" },
-  treeFolder: { display: "flex", alignItems: "center", gap: "4px", padding: "3px 8px", borderRadius: "4px", cursor: "pointer", fontSize: "13px", color: "var(--text-secondary)" },
+  treeFolder: { display: "flex", alignItems: "center", gap: "4px", minHeight: "26px", minWidth: 0, padding: "3px 8px", borderRadius: "4px", cursor: "pointer", fontSize: "13px", color: "var(--text-secondary)" },
   chevron: { fontSize: "10px", width: "12px", textAlign: "center" as const, flexShrink: 0, color: "var(--text-muted)" },
   folderIcon: { fontSize: "12px", flexShrink: 0, color: "var(--text-muted)" },
   countBadge: { fontSize: "10px", color: "var(--text-muted)", marginLeft: "4px" },
-  inlineInput: { flex: 1, padding: "1px 4px", fontSize: "13px", backgroundColor: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--accent-primary)", borderRadius: "3px", outline: "none" },
-  recentHeader: { display: "flex", alignItems: "center", gap: "4px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "11px", fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.5px" },
+  inlineInput: { flex: 1, padding: "1px 4px", fontSize: "13px", backgroundColor: "var(--control-bg)", color: "var(--text-primary)", border: "1px solid var(--control-border-strong)", borderRadius: "3px", outline: "none" },
+  recentHeader: { display: "flex", alignItems: "center", gap: "4px", minWidth: 0, padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "11px", fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.5px" },
   recentChevron: { fontSize: "10px", width: "12px", textAlign: "center" as const, color: "var(--text-muted)" },
-  recentTitle: { flex: 1 },
+  recentTitle: { flex: 1, minWidth: 0, overflow: "hidden" as const, textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const },
   recentClearBtn: { padding: "1px 6px", backgroundColor: "transparent", color: "var(--text-muted)", border: "none", borderRadius: "3px", cursor: "pointer", fontSize: "10px" },
   recentList: { display: "flex", flexDirection: "column", gap: "2px", marginBottom: "8px" },
-  sectionHeader: { display: "flex", alignItems: "center", gap: "6px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "11px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px" },
-  sectionTitle: { flex: 1, fontSize: "11px" },
+  sectionHeader: { display: "flex", alignItems: "center", gap: "6px", minWidth: 0, padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "11px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px" },
+  sectionTitle: { flex: 1, minWidth: 0, fontSize: "11px", overflow: "hidden" as const, textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const },
   sectionBadge: { fontSize: "10px", color: "var(--text-muted)", backgroundColor: "var(--bg-input)", padding: "1px 6px", borderRadius: "8px", fontWeight: 500 },
+  sectionDescription: { fontSize: "10px", color: "var(--text-muted)", padding: "0 8px 4px 28px", lineHeight: 1.35 },
   sectionList: { display: "flex", flexDirection: "column", gap: "2px" },
+  emptySection: { fontSize: "11px", color: "var(--text-muted)", padding: "4px 8px 6px 28px", fontStyle: "italic" },
   filterBar: { display: "flex", alignItems: "center", gap: "4px", padding: "4px 8px", marginBottom: "4px", flexWrap: "wrap" as const },
   filterLabel: { fontSize: "10px", color: "var(--text-muted)", marginRight: "2px" },
   filterTag: { fontSize: "10px", color: "var(--accent-primary)", backgroundColor: "var(--accent-primary)18", padding: "1px 5px", borderRadius: "3px" },

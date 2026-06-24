@@ -61,8 +61,336 @@ function createBuiltinCard(
   };
 }
 
+type ParamLocalization = Partial<Pick<ParamDefinition, "label" | "placeholder" | "description">> & {
+  options?: Record<string, string>;
+};
+
+interface BuiltinCardLocalization {
+  name: string;
+  description: string;
+  template?: string;
+  tags?: string[];
+  params?: Record<string, ParamLocalization>;
+}
+
+const BUILTIN_CARD_LOCALIZATION: Record<string, BuiltinCardLocalization> = {
+  search: {
+    name: "搜索笔记",
+    description: "按关键词或语义相似度检索笔记",
+    template: "检索与以下内容相关的笔记：{{query}}",
+    tags: ["搜索", "检索", "查询"],
+    params: {
+      query: { label: "查询", placeholder: "输入搜索关键词..." },
+      top_k: { label: "结果数量", description: "返回结果数量" },
+    },
+  },
+  summarize: {
+    name: "总结",
+    description: "为选中笔记生成摘要",
+    template: "请以 {{style}} 形式总结以下内容：{{target}}",
+    tags: ["总结", "摘要", "概览"],
+    params: {
+      target: { label: "内容", placeholder: "需要总结的内容..." },
+      style: { label: "形式", options: { bullet: "项目符号", paragraph: "段落", outline: "大纲" } },
+    },
+  },
+  rewrite: {
+    name: "改写",
+    description: "优化表达并重写内容",
+    template: "请以 {{style}} 风格改写以下内容：{{content}}",
+    tags: ["改写", "润色", "表达"],
+    params: {
+      content: { label: "内容", placeholder: "需要改写的内容..." },
+      style: {
+        label: "风格",
+        options: { formal: "正式", casual: "自然", academic: "学术", creative: "创意" },
+      },
+    },
+  },
+  translate: {
+    name: "翻译",
+    description: "将内容翻译为目标语言",
+    template: "请将以下内容翻译为 {{targetLanguage}}：{{content}}",
+    tags: ["翻译", "语言", "转换"],
+    params: {
+      content: { label: "内容", placeholder: "需要翻译的内容..." },
+      targetLanguage: {
+        label: "目标语言",
+        options: {
+          English: "英语",
+          Chinese: "中文",
+          Japanese: "日语",
+          Korean: "韩语",
+          Spanish: "西班牙语",
+          French: "法语",
+          German: "德语",
+        },
+      },
+    },
+  },
+  expand: {
+    name: "扩展",
+    description: "补充更多细节与例子",
+    template: "请扩展以下内容，补充细节与例子：{{content}}",
+    tags: ["扩展", "细化", "补充"],
+    params: {
+      content: { label: "内容", placeholder: "需要扩展的内容..." },
+      depth: { label: "深度", options: { brief: "简短", standard: "标准", detailed: "详细" } },
+    },
+  },
+  simplify: {
+    name: "简化",
+    description: "让内容更容易理解",
+    template: "请简化以下内容：{{content}}",
+    tags: ["简化", "澄清", "易读"],
+    params: {
+      content: { label: "内容", placeholder: "需要简化的内容..." },
+      level: { label: "层级", options: { basic: "基础", moderate: "适中", advanced: "进阶" } },
+    },
+  },
+  brainstorm: {
+    name: "头脑风暴",
+    description: "围绕主题生成创意想法",
+    template: "请围绕以下主题生成 {{count}} 个创意想法：{{topic}}",
+    tags: ["头脑风暴", "想法", "创意"],
+    params: {
+      topic: { label: "主题", placeholder: "输入主题..." },
+      count: { label: "数量" },
+    },
+  },
+  outline: {
+    name: "生成大纲",
+    description: "为内容生成详细结构大纲",
+    template: "请为以下内容生成详细大纲：{{content}}",
+    tags: ["大纲", "结构", "组织"],
+    params: {
+      content: { label: "内容", placeholder: "需要生成大纲的内容..." },
+      depth: { label: "层级深度" },
+    },
+  },
+  organize: {
+    name: "整理",
+    description: "整理并结构化笔记",
+    template: "请使用 {{method}} 方法整理以下内容：{{target}}",
+    tags: ["整理", "结构", "编排"],
+    params: {
+      target: { label: "内容", placeholder: "需要整理的内容..." },
+      method: {
+        label: "方法",
+        options: { auto: "自动", chronological: "时间线", hierarchical: "层级", topical: "主题" },
+      },
+    },
+  },
+  connect: {
+    name: "建立联系",
+    description: "发现并建立笔记之间的连接",
+    template: "请寻找以下两组内容之间的连接：{{source}} 与 {{target}}",
+    tags: ["连接", "关联", "关系"],
+    params: {
+      source: { label: "来源", placeholder: "来源内容..." },
+      target: { label: "目标", placeholder: "目标内容..." },
+    },
+  },
+  analyze: {
+    name: "分析",
+    description: "分析文本结构、论证逻辑和关键词",
+    template: "请分析以下内容：{{content}}",
+    tags: ["分析", "结构", "关键词"],
+    params: {
+      target: { label: "目标笔记", placeholder: "目标笔记路径..." },
+      content: { label: "内容", placeholder: "需要分析的内容..." },
+    },
+  },
+  compare: {
+    name: "对比",
+    description: "对比多个概念或笔记",
+    template: "请以 {{format}} 形式对比以下概念：{{concepts}}",
+    tags: ["对比", "比较", "分析"],
+    params: {
+      concepts: { label: "概念", placeholder: "输入需要对比的概念..." },
+      format: { label: "形式", options: { table: "表格", "pros-cons": "利弊", paragraph: "段落" } },
+    },
+  },
+  question: {
+    name: "深度提问",
+    description: "生成用于深入思考的问题",
+    template: "请围绕以下内容生成 {{count}} 个深度思考问题：{{content}}",
+    tags: ["问题", "思考", "探索"],
+    params: {
+      content: { label: "内容", placeholder: "需要提问的内容..." },
+      count: { label: "数量" },
+    },
+  },
+  suggest: {
+    name: "改进建议",
+    description: "提供面向内容改进的建议",
+    template: "请为以下内容提供改进建议：{{content}}",
+    tags: ["建议", "改进", "推荐"],
+    params: {
+      content: { label: "内容", placeholder: "需要改进的内容..." },
+      focus: {
+        label: "关注点",
+        options: { general: "通用", clarity: "清晰度", structure: "结构", style: "风格" },
+      },
+    },
+  },
+  review: {
+    name: "审查",
+    description: "审查内容问题并提出改进方向",
+    template: "请按 {{criteria}} 标准审查以下内容：{{content}}",
+    tags: ["审查", "检查", "评估"],
+    params: {
+      content: { label: "内容", placeholder: "需要审查的内容..." },
+      criteria: {
+        label: "标准",
+        options: { quality: "质量", accuracy: "准确性", completeness: "完整性", consistency: "一致性" },
+      },
+    },
+  },
+  research: {
+    name: "研究",
+    description: "使用 AI 对主题进行深度研究",
+    template: "请对以下主题进行深度研究：{{topic}}",
+    tags: ["研究", "调查", "学习"],
+    params: {
+      topic: { label: "主题", placeholder: "输入研究主题..." },
+      depth: { label: "深度", options: { quick: "快速", standard: "标准", comprehensive: "全面" } },
+    },
+  },
+  format: {
+    name: "格式化",
+    description: "将内容整理为指定格式",
+    template: "请将以下内容格式化为 {{format}}：{{content}}",
+    tags: ["格式", "转换", "样式"],
+    params: {
+      content: { label: "内容", placeholder: "需要格式化的内容..." },
+      format: { label: "格式", options: { markdown: "Markdown", html: "HTML", plain: "纯文本", json: "JSON" } },
+    },
+  },
+  extract: {
+    name: "提取信息",
+    description: "从内容中提取关键信息",
+    template: "请从以下内容中提取 {{type}}：{{content}}",
+    tags: ["提取", "关键", "信息"],
+    params: {
+      content: { label: "内容", placeholder: "需要提取的内容..." },
+      type: {
+        label: "类型",
+        options: { keypoints: "关键点", entities: "实体", dates: "日期", links: "链接", code: "代码块" },
+      },
+    },
+  },
+  visualize: {
+    name: "可视化",
+    description: "为数据创建可视化表达",
+    template: "请将以下数据可视化为 {{chartType}} 图表：{{data}}",
+    tags: ["可视化", "图表", "数据"],
+    params: {
+      data: { label: "数据", placeholder: "需要可视化的数据..." },
+      chartType: {
+        label: "图表类型",
+        options: { bar: "柱状图", line: "折线图", pie: "饼图", scatter: "散点图" },
+      },
+    },
+  },
+  dream: {
+    name: "Dream 整合",
+    description: "运行记忆整合流程（NREM / REM / Insight）",
+    template: "请以 {{mode}} 模式运行 Dream 循环",
+    tags: ["Dream", "记忆", "整合"],
+    params: {
+      mode: {
+        label: "模式",
+        options: { full: "完整循环", nrem: "仅 NREM", rem: "仅 REM", insight: "仅 Insight" },
+      },
+    },
+  },
+  "deep-research": {
+    name: "深度研究",
+    description: "由 LLM 引导的四阶段深度研究流程",
+    tags: ["Agent", "研究", "深度研究"],
+    params: {
+      question: { label: "研究问题", placeholder: "输入研究问题..." },
+      depth: { label: "深度" },
+    },
+  },
+  "dream-cycle": {
+    name: "Dream 循环",
+    description: "触发 NREM -> REM -> Insight 记忆整合",
+    tags: ["Agent", "Dream", "记忆", "整合"],
+  },
+  "multi-search": {
+    name: "多源检索",
+    description: "跨本地、网络、arXiv 与 Semantic Scholar 的多源检索",
+    tags: ["Agent", "检索", "多源", "召回"],
+    params: {
+      query: { label: "查询", placeholder: "输入搜索关键词..." },
+      sources: {
+        label: "来源",
+        options: { local: "本地", web: "网络", arxiv: "arXiv", "semantic-scholar": "Semantic Scholar" },
+      },
+    },
+  },
+  "orchestrator-check": {
+    name: "编排器状态",
+    description: "查看编排器与 Agent 健康状态",
+    tags: ["Agent", "编排器", "状态", "监控"],
+  },
+  "graph-analysis": {
+    name: "图谱深潜",
+    description: "围绕概念展开图谱邻域分析",
+    tags: ["Agent", "图谱", "深潜", "分析"],
+    params: {
+      concept: { label: "概念", placeholder: "输入概念..." },
+      depth: { label: "深度" },
+    },
+  },
+};
+
+function localizeBuiltinCard(card: CommandCardDefinition): CommandCardDefinition {
+  const localization = BUILTIN_CARD_LOCALIZATION[card.meta.id];
+  if (!localization) return card;
+
+  const params = card.params.map((param) => {
+    const localizedParam = localization.params?.[param.name];
+    if (!localizedParam) return param;
+
+    return {
+      ...param,
+      label: localizedParam.label ?? param.label,
+      placeholder: localizedParam.placeholder ?? param.placeholder,
+      description: localizedParam.description ?? param.description,
+      options: param.options?.map((option) => ({
+        ...option,
+        label: localizedParam.options?.[String(option.value)] ?? option.label,
+      })),
+    };
+  });
+
+  return {
+    ...card,
+    meta: {
+      ...card.meta,
+      name: localization.name,
+      description: localization.description,
+      tags: localization.tags ?? card.meta.tags,
+    },
+    prompt: {
+      ...card.prompt,
+      template: localization.template ?? card.prompt.template,
+      variables: card.prompt.variables.map((variable) => {
+        const localizedParam = localization.params?.[variable.name];
+        return localizedParam?.description
+          ? { ...variable, description: localizedParam.description }
+          : variable;
+      }),
+    },
+    params,
+  };
+}
+
 /** 内置指令卡列表 */
-const BUILTIN_CARDS: CommandCardDefinition[] = [
+const BUILTIN_CARD_DEFINITIONS: CommandCardDefinition[] = [
   // Content Operations
   createBuiltinCard(
     "search",
@@ -535,6 +863,8 @@ const BUILTIN_CARDS: CommandCardDefinition[] = [
     8
   ),
 ];
+
+const BUILTIN_CARDS: CommandCardDefinition[] = BUILTIN_CARD_DEFINITIONS.map(localizeBuiltinCard);
 
 // ============================================================================
 // Command Card Registry Class

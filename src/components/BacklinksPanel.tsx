@@ -217,7 +217,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
 
   if (!currentNotePath) {
     return (
-      <div style={S.noNote}>No note selected</div>
+      <div style={S.noNote}>未选择笔记</div>
     );
   }
 
@@ -241,7 +241,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
             <path d="M6 3l6 5-6 5" />
           </svg>
         </span>
-        Links
+        链接
       </div>
       {!collapsed && (
         <>
@@ -253,7 +253,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
               }}
               onClick={(e) => { e.stopPropagation(); setActiveTab("incoming"); }}
             >
-              Incoming ({backlinks.length})
+              入链 ({backlinks.length})
             </button>
             <button
               style={{
@@ -262,18 +262,18 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
               }}
               onClick={(e) => { e.stopPropagation(); setActiveTab("outgoing"); }}
             >
-              Outgoing ({outgoingLinks.length})
+              出链 ({outgoingLinks.length})
             </button>
           </div>
           <div style={S.body}>
             {activeTab === "incoming" && (
               <>
                 {loading && (
-                  <div style={S.empty}>Loading backlinks...</div>
+                  <div style={S.empty}>正在加载反向链接...</div>
                 )}
                 {!loading && backlinks.length === 0 && (
                   <div style={S.empty}>
-                    No notes link to this one yet. Try adding [[links]] from other notes.
+                    还没有笔记链接到这里。可以在其他笔记中添加 [[双链]]。
                   </div>
                 )}
                 {!loading &&
@@ -317,7 +317,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
               <>
                 {outgoingLinks.length === 0 && (
                   <div style={S.empty}>
-                    No outgoing links. Add [[wiki links]] in your note content.
+                    暂无出链。可在笔记内容中添加 [[wiki 双链]]。
                   </div>
                 )}
                 {outgoingLinks.map((link, i) => (
@@ -358,7 +358,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
                           const newContent = `# ${link.title}\n\n`;
                           try {
                             const { invoke } = await import("@tauri-apps/api/core");
-                            await invoke("write_note", {
+                            await invoke("save_note", {
                               path: link.path.endsWith(".md") ? link.path : `${link.path}.md`,
                               content: newContent,
                             });
@@ -376,7 +376,7 @@ export default function BacklinksPanel({ currentNotePath, isTauri }: BacklinksPa
                           }
                         }}
                       >
-                        Create
+                        创建
                       </button>
                     )}
                   </div>

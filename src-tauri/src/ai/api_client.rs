@@ -193,11 +193,13 @@ struct OpenAiResponse {
 #[derive(Deserialize, Debug)]
 struct OpenAiChoice {
     message: OpenAiMessageResp,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 struct OpenAiMessageResp {
-    content: String,
+    content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -244,11 +246,7 @@ pub async fn openai_complete(
         .await
         .map_err(|e| format!("OpenAI response parse error: {}", e))?;
 
-    let text = data
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default();
+    let text = first_chat_content(&data, "OpenAI")?;
 
     let (tokens_in, tokens_out) = data
         .usage
@@ -296,11 +294,7 @@ pub async fn deepseek_complete(
         .await
         .map_err(|e| format!("DeepSeek response parse error: {}", e))?;
 
-    let text = data
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default();
+    let text = first_chat_content(&data, "DeepSeek")?;
 
     let (tokens_in, tokens_out) = data
         .usage
@@ -436,6 +430,29 @@ pub async fn ollama_complete(
         .map_err(|e| format!("Ollama response parse error: {}", e))?;
 
     Ok((data.response, 0, 0))
+}
+
+fn first_chat_content(data: &OpenAiResponse, provider_name: &str) -> Result<String, String> {
+    let Some(choice) = data.choices.first() else {
+        return Ok(String::new());
+    };
+    let content = choice.message.content.as_deref().unwrap_or_default();
+    if !content.trim().is_empty() {
+        return Ok(content.to_string());
+    }
+    let reasoning = choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .unwrap_or_default();
+    if !reasoning.trim().is_empty() {
+        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+        return Err(format!(
+            "{} returned reasoning_content but no final content (finish_reason: {}). Increase max_tokens or use a non-reasoning chat model.",
+            provider_name, finish_reason
+        ));
+    }
+    Ok(String::new())
 }
 
 // ─── Embedding API (OpenAI compatible) ──────────────
@@ -650,5 +667,42 @@ mod tests {
         let result = gemini_embed("fake-key", &[]).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn chat_response_prefers_final_content_over_reasoning_content() {
+        let json = r#"{
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": "final answer",
+                    "reasoning_content": "private reasoning"
+                }
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#;
+        let data: OpenAiResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(first_chat_content(&data, "DeepSeek").unwrap(), "final answer");
+    }
+
+    #[test]
+    fn chat_response_errors_when_reasoning_exhausts_completion_without_final_content() {
+        let json = r#"{
+            "choices": [{
+                "finish_reason": "length",
+                "message": {
+                    "content": "",
+                    "reasoning_content": "reasoning used the whole completion budget"
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 32, "total_tokens": 52}
+        }"#;
+        let data: OpenAiResponse = serde_json::from_str(json).unwrap();
+
+        let err = first_chat_content(&data, "DeepSeek").unwrap_err();
+        assert!(err.contains("DeepSeek"));
+        assert!(err.contains("reasoning_content"));
+        assert!(err.contains("max_tokens"));
     }
 }

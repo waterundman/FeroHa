@@ -1,0 +1,21 @@
+{
+  "card_id": null,
+  "card_type": null,
+  "intent": "/agent research 无 vault 只读自动入队真实 IPC 测试",
+  "ghost_ids": [],
+  "feedback_summary": null,
+  "phase_timings": {
+    "retrieve_ms": 9
+  },
+  "retrieval_evidence": [
+    {
+      "source": "local_vector",
+      "entries": [],
+      "hop": 0,
+      "generated_keywords": [
+        "/agent research 无 vault 只读自动入队真实 IPC 测试"
+      ],
+      "total_found": 0
+    }
+  ]
+}

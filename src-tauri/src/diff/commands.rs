@@ -1,10 +1,9 @@
-use crate::diff::ast_diff::DiffOp;
+use crate::bridge::proposal::{BridgeProposal, BridgeProposalStatus, SourceRefKind};
 use crate::diff::ghost_store::{GhostOp, GhostStatus};
-use crate::diff::merge_engine::apply_merge;
 use crate::AiState;
 use crate::AppState;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +18,53 @@ pub(crate) struct DiffBlock {
     new_text: Option<String>,
     accepted: bool,
     rejected: bool,
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn bridge_status_for_ghost_status(ghost_status: &GhostStatus) -> Option<BridgeProposalStatus> {
+    match ghost_status {
+        GhostStatus::Accepted => Some(BridgeProposalStatus::Approved),
+        GhostStatus::Rejected => Some(BridgeProposalStatus::Rejected),
+        _ => None,
+    }
+}
+
+fn sync_bridge_status_for_ghost(
+    state: &Mutex<AppState>,
+    ghost_id: &str,
+    ghost_status: &GhostStatus,
+) -> Option<BridgeProposal> {
+    let bridge_status = bridge_status_for_ghost_status(ghost_status)?;
+    let store = match state.lock() {
+        Ok(app) => app.bridge_store.clone(),
+        Err(error) => {
+            tracing::warn!("Failed to sync ghost bridge status: {}", error);
+            return None;
+        }
+    }?;
+
+    match store.update_status_by_source_ref(
+        &SourceRefKind::Ghost,
+        ghost_id,
+        bridge_status,
+        now_millis(),
+    ) {
+        Ok(updated) => updated,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to update bridge proposal for ghost {}: {}",
+                ghost_id,
+                error
+            );
+            None
+        }
+    }
 }
 
 #[tauri::command]
@@ -84,76 +130,69 @@ pub(crate) fn list_ghosts(
         .collect())
 }
 
+fn accept_ghost_feedback(
+    ghost: &mut crate::diff::ghost_store::GhostNote,
+    block_ids: &[String],
+) -> usize {
+    let valid_block_ids = ghost
+        .suggested_blocks
+        .iter()
+        .map(|block| block.block_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut accepted_count = 0;
+
+    for block_id in block_ids {
+        if !valid_block_ids.contains(block_id.as_str()) {
+            continue;
+        }
+        if !ghost.accepted_blocks.contains(block_id) {
+            ghost.accepted_blocks.push(block_id.clone());
+            accepted_count += 1;
+        }
+        ghost.rejected_blocks.retain(|id| id != block_id);
+    }
+    update_ghost_status(ghost);
+    accepted_count
+}
+
 #[tauri::command]
 pub(crate) fn accept_diff(
     ghost_id: String,
     block_ids: Vec<String>,
     state: State<'_, Mutex<AppState>>,
     ai_state: State<'_, Mutex<AiState>>,
+    app_handle: AppHandle,
 ) -> Result<String, String> {
-    let ai = ai_state.lock().map_err(|e| e.to_string())?;
-    let ghost = ai
-        .ghost_store
-        .get(&ghost_id)
-        .ok_or_else(|| format!("Ghost note not found: {}", ghost_id))?;
-
-    let mut diff_ops: Vec<DiffOp> = Vec::new();
-    for block in &ghost.suggested_blocks {
-        if block_ids.contains(&block.block_id) {
-            match block.operation {
-                GhostOp::Insert | GhostOp::Suggestion => {
-                    diff_ops.push(DiffOp::InsertBlock {
-                        position: 0,
-                        block_id: block.block_id.clone(),
-                        text: block.content.clone(),
-                    });
-                }
-                GhostOp::Delete => {
-                    diff_ops.push(DiffOp::DeleteBlock {
-                        block_id: block.block_id.clone(),
-                    });
-                }
-                GhostOp::Modify => {
-                    diff_ops.push(DiffOp::ModifyBlock {
-                        block_id: block.block_id.clone(),
-                        old_text: block.heading_context.clone(),
-                        new_text: block.content.clone(),
-                    });
-                }
-            }
-        }
+    let (ghost_update, updated_status, accepted_count, source_note) = {
+        let ai = ai_state.lock().map_err(|e| e.to_string())?;
+        let mut updated_ghost = ai
+            .ghost_store
+            .get(&ghost_id)
+            .ok_or_else(|| format!("Ghost note not found: {}", ghost_id))?;
+        let accepted_count = accept_ghost_feedback(&mut updated_ghost, &block_ids);
+        ai.ghost_store.save(&updated_ghost)?;
+        let updated_status = updated_ghost.status.clone();
+        (
+            serde_json::json!({
+                "ghost_id": ghost_id,
+                "status": updated_status,
+                "accepted_blocks": updated_ghost.accepted_blocks,
+                "rejected_blocks": updated_ghost.rejected_blocks,
+            }),
+            updated_status,
+            accepted_count,
+            updated_ghost.source_note,
+        )
+    };
+    let bridge_update = sync_bridge_status_for_ghost(&state, &ghost_id, &updated_status);
+    let _ = app_handle.emit("ghost-updated", ghost_update);
+    if let Some(proposal) = bridge_update {
+        let _ = app_handle.emit("bridge-proposal-updated", &proposal);
     }
-
-    let app = state.lock().map_err(|e| e.to_string())?;
-    let vault = app.vault.as_ref().ok_or("No vault open")?;
-    let original_content = vault.read_note(&ghost.source_note).unwrap_or_default();
-    let merged_content = apply_merge(&original_content, &diff_ops).map_err(|e| e.to_string())?;
-
-    vault
-        .write_note(&ghost.source_note, &merged_content)
-        .map_err(|e| e.to_string())?;
-
-    drop(ai);
-    drop(app);
-
-    let ai = ai_state.lock().map_err(|e| e.to_string())?;
-    let mut updated_ghost = ai
-        .ghost_store
-        .get(&ghost_id)
-        .ok_or_else(|| format!("Ghost note not found: {}", ghost_id))?;
-    for block_id in &block_ids {
-        if !updated_ghost.accepted_blocks.contains(block_id) {
-            updated_ghost.accepted_blocks.push(block_id.clone());
-        }
-        updated_ghost.rejected_blocks.retain(|id| id != block_id);
-    }
-    update_ghost_status(&mut updated_ghost);
-    ai.ghost_store.save(&updated_ghost)?;
 
     Ok(format!(
-        "Accepted {} blocks into {}",
-        block_ids.len(),
-        ghost.source_note
+        "Recorded feedback for {} blocks from {}; human note content was not modified",
+        accepted_count, source_note
     ))
 }
 
@@ -161,29 +200,49 @@ pub(crate) fn accept_diff(
 pub(crate) fn reject_diff(
     ghost_id: String,
     block_ids: Option<Vec<String>>,
+    state: State<'_, Mutex<AppState>>,
     ai_state: State<'_, Mutex<AiState>>,
+    app_handle: AppHandle,
 ) -> Result<String, String> {
-    let ai = ai_state.lock().map_err(|e| e.to_string())?;
-    let mut ghost = ai
-        .ghost_store
-        .get(&ghost_id)
-        .ok_or_else(|| format!("Ghost note not found: {}", ghost_id))?;
-    let ids = block_ids.unwrap_or_else(|| {
-        ghost
-            .suggested_blocks
-            .iter()
-            .map(|block| block.block_id.clone())
-            .collect()
-    });
-    for block_id in &ids {
-        if !ghost.rejected_blocks.contains(block_id) {
-            ghost.rejected_blocks.push(block_id.clone());
+    let (ghost_update, updated_status, rejected_count) = {
+        let ai = ai_state.lock().map_err(|e| e.to_string())?;
+        let mut ghost = ai
+            .ghost_store
+            .get(&ghost_id)
+            .ok_or_else(|| format!("Ghost note not found: {}", ghost_id))?;
+        let ids = block_ids.unwrap_or_else(|| {
+            ghost
+                .suggested_blocks
+                .iter()
+                .map(|block| block.block_id.clone())
+                .collect()
+        });
+        for block_id in &ids {
+            if !ghost.rejected_blocks.contains(block_id) {
+                ghost.rejected_blocks.push(block_id.clone());
+            }
+            ghost.accepted_blocks.retain(|id| id != block_id);
         }
-        ghost.accepted_blocks.retain(|id| id != block_id);
+        update_ghost_status(&mut ghost);
+        ai.ghost_store.save(&ghost)?;
+        let updated_status = ghost.status.clone();
+        (
+            serde_json::json!({
+                "ghost_id": ghost_id.clone(),
+                "status": updated_status,
+                "accepted_blocks": ghost.accepted_blocks,
+                "rejected_blocks": ghost.rejected_blocks,
+            }),
+            updated_status,
+            ids.len(),
+        )
+    };
+    let bridge_update = sync_bridge_status_for_ghost(&state, &ghost_id, &updated_status);
+    let _ = app_handle.emit("ghost-updated", ghost_update);
+    if let Some(proposal) = bridge_update {
+        let _ = app_handle.emit("bridge-proposal-updated", &proposal);
     }
-    update_ghost_status(&mut ghost);
-    ai.ghost_store.save(&ghost)?;
-    Ok(format!("Rejected {} blocks from {}", ids.len(), ghost_id))
+    Ok(format!("Rejected {} blocks from {}", rejected_count, ghost_id))
 }
 
 fn update_ghost_status(ghost: &mut crate::diff::ghost_store::GhostNote) {
@@ -207,6 +266,63 @@ fn update_ghost_status(ghost: &mut crate::diff::ghost_store::GhostNote) {
     } else {
         GhostStatus::Pending
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepting_ghost_blocks_updates_feedback_without_merging_note_text() {
+        let mut ghost = crate::diff::ghost_store::GhostNote {
+            id: "ghost-feedback".to_string(),
+            task_id: Some("task-feedback".to_string()),
+            source_note: "human.md".to_string(),
+            task_description: "Review AI suggestion".to_string(),
+            suggested_blocks: vec![crate::diff::ghost_store::GhostBlock {
+                block_id: "block-1".to_string(),
+                content: "AI suggestion".to_string(),
+                operation: GhostOp::Suggestion,
+                after_block_id: None,
+                heading_context: String::new(),
+                context: vec![],
+                verified: None,
+                verification_result: None,
+            }],
+            created_at: 1,
+            status: GhostStatus::Pending,
+            priority: 50,
+            expires_at: None,
+            related_ghosts: vec![],
+            confidence: 0.7,
+            feedback_history: vec![],
+            accepted_blocks: vec![],
+            rejected_blocks: vec![],
+        };
+
+        let accepted = accept_ghost_feedback(&mut ghost, &["block-1".to_string()]);
+
+        assert_eq!(accepted, 1);
+        assert_eq!(ghost.accepted_blocks, vec!["block-1"]);
+        assert!(matches!(ghost.status, GhostStatus::Accepted));
+    }
+
+    #[test]
+    fn final_ghost_statuses_map_to_bridge_resolution_statuses() {
+        assert_eq!(
+            bridge_status_for_ghost_status(&GhostStatus::Accepted),
+            Some(BridgeProposalStatus::Approved)
+        );
+        assert_eq!(
+            bridge_status_for_ghost_status(&GhostStatus::Rejected),
+            Some(BridgeProposalStatus::Rejected)
+        );
+        assert_eq!(bridge_status_for_ghost_status(&GhostStatus::Pending), None);
+        assert_eq!(
+            bridge_status_for_ghost_status(&GhostStatus::PartiallyAccepted),
+            None
+        );
+    }
 }
 
 #[allow(dead_code)]

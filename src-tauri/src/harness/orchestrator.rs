@@ -3,6 +3,7 @@ use crate::ai::sandbox::SandboxPolicy;
 use crate::ai::task_intent::TaskIntentType;
 use crate::harness::regression::{DreamAuditSnapshot, EpochEndReason};
 use crate::harness::scientist::CleanKnowledge;
+use crate::harness::workflow::{HarnessEvent, VerificationFinding, VerificationOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -103,6 +104,34 @@ pub struct TrackInfo {
     pub focus: String,
     pub status: String,
     pub parent_agent: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub claim_count: usize,
+    #[serde(default)]
+    pub source_ref_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OrchestratorDiagnosticSource {
+    EpochReason,
+    WorkflowVerifier,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestratorDiagnostic {
+    pub source: OrchestratorDiagnosticSource,
+    pub reason_code: String,
+    pub summary: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub minimal_fix_surface: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub failed_clauses: Vec<usize>,
+    pub severity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +173,18 @@ pub struct OrchestratorStatus {
     pub degraded_agents: Vec<String>,
     pub epoch_count: usize,
     pub track_count: usize,
+    #[serde(default)]
+    pub track_event_count: usize,
+    #[serde(default)]
+    pub material_packet_count: usize,
+    #[serde(default)]
+    pub active_track_count: usize,
+    #[serde(default)]
+    pub completed_track_count: usize,
+    #[serde(default)]
+    pub failed_track_count: usize,
+    #[serde(default)]
+    pub cancelled_track_count: usize,
     pub last_event: Option<OrchestratorEvent>,
     #[serde(default)]
     pub recent_events: Vec<OrchestratorEvent>,
@@ -151,6 +192,16 @@ pub struct OrchestratorStatus {
     pub agent_states: Vec<AgentState>,
     #[serde(default)]
     pub track_details: Vec<TrackInfo>,
+    #[serde(default)]
+    pub diagnostics: Vec<OrchestratorDiagnostic>,
+    #[serde(default)]
+    pub workflow_event_count: usize,
+    #[serde(default)]
+    pub workflow_replan_request_count: usize,
+    #[serde(default)]
+    pub recent_workflow_events: Vec<HarnessEvent>,
+    #[serde(default)]
+    pub workflow_event_log_path: Option<String>,
 }
 
 pub struct Orchestrator {
@@ -164,6 +215,8 @@ pub struct Orchestrator {
     agent_previous_result_len: HashMap<String, usize>,
     agent_regression_count: HashMap<String, usize>,
     agent_cooldown_until: HashMap<String, u64>,
+    track_records: HashMap<String, TrackInfo>,
+    diagnostics: Vec<OrchestratorDiagnostic>,
 }
 
 impl Orchestrator {
@@ -179,6 +232,8 @@ impl Orchestrator {
             agent_previous_result_len: HashMap::new(),
             agent_regression_count: HashMap::new(),
             agent_cooldown_until: HashMap::new(),
+            track_records: HashMap::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -244,6 +299,7 @@ impl Orchestrator {
         let reasons = self.classify_epoch_reasons(&metrics);
         let threshold_exceeded = convergence < self.regression_thresholds.convergence_min
             || reasons.iter().any(Self::is_regressive_reason);
+        self.record_epoch_diagnostics(agent_id, &reasons);
 
         if self.is_in_cooldown(agent_id) {
             return AuditResult {
@@ -434,6 +490,21 @@ impl Orchestrator {
             })
             .collect();
 
+        for packet in &packets {
+            self.track_records.insert(
+                packet.track_id.clone(),
+                TrackInfo {
+                    track_id: packet.track_id.clone(),
+                    focus: packet.focus.clone(),
+                    status: "active".to_string(),
+                    parent_agent: packet.parent_task_id.clone(),
+                    reason: Some(packet.instruction.clone()),
+                    claim_count: packet.claims.len(),
+                    source_ref_count: packet.source_refs.len(),
+                },
+            );
+        }
+
         let track_count = packets.len();
         self.log_event(
             &original_task.id,
@@ -444,63 +515,191 @@ impl Orchestrator {
         packets
     }
 
+    pub fn record_verification_findings(
+        &mut self,
+        agent_id: &str,
+        findings: &[VerificationFinding],
+    ) {
+        for finding in findings {
+            let diagnostic = Self::diagnostic_from_verification_finding(agent_id, finding);
+            if !self.diagnostics.contains(&diagnostic) {
+                self.diagnostics.push(diagnostic);
+            }
+        }
+    }
+
     pub fn status(&self) -> OrchestratorStatus {
         let active = self
             .agent_epochs
             .len()
             .saturating_sub(self.degraded_agents.len());
 
-        let mut spawned = 0usize;
-        let mut completed = 0usize;
-        let mut failed = 0usize;
-        let mut cancelled = 0usize;
+        let mut track_event_count = 0usize;
 
         for event in &self.event_log {
-            match event.event_type {
-                OrchestratorEventType::ParallelTracksSpawned => spawned += 1,
-                OrchestratorEventType::TrackCompleted => completed += 1,
-                OrchestratorEventType::TrackFailed => failed += 1,
-                OrchestratorEventType::TrackCancelled => cancelled += 1,
-                _ => {}
+            if matches!(
+                event.event_type,
+                OrchestratorEventType::ParallelTracksSpawned
+            ) {
+                track_event_count += 1;
             }
         }
-
-        let track_count = spawned.saturating_sub(completed + failed + cancelled);
 
         let recent_events: Vec<OrchestratorEvent> =
             self.event_log.iter().rev().take(20).cloned().collect();
 
         let agent_states = self.agent_states();
 
-        let track_details: Vec<TrackInfo> = self
-            .event_log
+        let mut track_details: Vec<TrackInfo> = self.track_records.values().cloned().collect();
+        track_details.sort_by(|a, b| a.track_id.cmp(&b.track_id));
+        let diagnostics = self
+            .diagnostics
             .iter()
-            .filter_map(|event| match event.event_type {
-                OrchestratorEventType::TrackCompleted => Some(TrackInfo {
-                    track_id: event.agent_id.clone(),
-                    focus: String::new(),
-                    status: "completed".to_string(),
-                    parent_agent: event.agent_id.clone(),
-                }),
-                OrchestratorEventType::TrackFailed => Some(TrackInfo {
-                    track_id: event.agent_id.clone(),
-                    focus: String::new(),
-                    status: "failed".to_string(),
-                    parent_agent: event.agent_id.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
+            .rev()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+
+        let material_packet_count = track_details.len();
+        let completed_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "completed")
+            .count();
+        let failed_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "failed")
+            .count();
+        let cancelled_track_count = track_details
+            .iter()
+            .filter(|track| track.status == "cancelled")
+            .count();
+        let active_track_count = material_packet_count
+            .saturating_sub(completed_track_count + failed_track_count + cancelled_track_count);
 
         OrchestratorStatus {
             active_agents: active,
             degraded_agents: self.degraded_agents.iter().cloned().collect(),
             epoch_count: self.epoch_count,
-            track_count,
+            track_count: active_track_count,
+            track_event_count,
+            material_packet_count,
+            active_track_count,
+            completed_track_count,
+            failed_track_count,
+            cancelled_track_count,
             last_event: self.event_log.last().cloned(),
             recent_events,
             agent_states,
             track_details,
+            diagnostics,
+            workflow_event_count: 0,
+            workflow_replan_request_count: 0,
+            recent_workflow_events: Vec::new(),
+            workflow_event_log_path: None,
+        }
+    }
+
+    fn record_epoch_diagnostics(&mut self, agent_id: &str, reasons: &[EpochEndReason]) {
+        for reason in reasons {
+            self.diagnostics
+                .push(Self::diagnostic_from_epoch_reason(agent_id, reason));
+        }
+    }
+
+    fn diagnostic_from_epoch_reason(
+        agent_id: &str,
+        reason: &EpochEndReason,
+    ) -> OrchestratorDiagnostic {
+        OrchestratorDiagnostic {
+            source: OrchestratorDiagnosticSource::EpochReason,
+            reason_code: reason.as_str().to_string(),
+            summary: Self::epoch_reason_summary(reason).to_string(),
+            target: Some(agent_id.to_string()),
+            minimal_fix_surface: Self::epoch_reason_fix_surface(reason)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            evidence_refs: Vec::new(),
+            failed_clauses: Vec::new(),
+            severity: if Self::is_regressive_reason(reason) {
+                "warning".to_string()
+            } else {
+                "info".to_string()
+            },
+        }
+    }
+
+    fn diagnostic_from_verification_finding(
+        _agent_id: &str,
+        finding: &VerificationFinding,
+    ) -> OrchestratorDiagnostic {
+        OrchestratorDiagnostic {
+            source: OrchestratorDiagnosticSource::WorkflowVerifier,
+            reason_code: finding.reason_code.clone(),
+            summary: finding.summary.clone(),
+            target: Some(finding.target.clone()),
+            minimal_fix_surface: finding.minimal_fix_surface.clone(),
+            evidence_refs: finding.evidence_refs.clone(),
+            failed_clauses: finding.failed_clauses.clone(),
+            severity: match finding.result {
+                VerificationOutcome::Pass => "info",
+                VerificationOutcome::CannotVerify => "warning",
+                VerificationOutcome::Fail => "error",
+            }
+            .to_string(),
+        }
+    }
+
+    fn epoch_reason_summary(reason: &EpochEndReason) -> &'static str {
+        match reason {
+            EpochEndReason::NoveltyPlateau => {
+                "Novelty has plateaued; the current loop is no longer producing new information."
+            }
+            EpochEndReason::EvidencePlateau => {
+                "Evidence gain has plateaued; the current loop needs new sources or a narrower claim."
+            }
+            EpochEndReason::DreamCoverageReached => {
+                "Dream coverage target has been reached; consolidation can pause or switch focus."
+            }
+            EpochEndReason::ContradictionRiskHigh => {
+                "Contradiction risk is high; claims need consistency verification before expansion."
+            }
+            EpochEndReason::ToolLoop => {
+                "Tool usage is looping; the workflow should reduce repeated retrieval or change strategy."
+            }
+            EpochEndReason::BudgetExhausted => {
+                "Budget is exhausted; replan should shrink scope or defer lower-value work."
+            }
+            EpochEndReason::HumanInterrupted => {
+                "Human interruption changed the run boundary; wait for updated intent before continuing."
+            }
+        }
+    }
+
+    fn epoch_reason_fix_surface(reason: &EpochEndReason) -> Vec<&'static str> {
+        match reason {
+            EpochEndReason::NoveltyPlateau => vec!["Add a new evidence source or stop the epoch"],
+            EpochEndReason::EvidencePlateau => {
+                vec!["Narrow the claim or request higher-signal retrieval"]
+            }
+            EpochEndReason::DreamCoverageReached => {
+                vec!["Switch from memory consolidation to verification"]
+            }
+            EpochEndReason::ContradictionRiskHigh => {
+                vec!["Run proposition consistency verification before writing"]
+            }
+            EpochEndReason::ToolLoop => {
+                vec!["Reduce repeated tool calls or change retrieval strategy"]
+            }
+            EpochEndReason::BudgetExhausted => {
+                vec!["Trim the workflow to the smallest verifiable step"]
+            }
+            EpochEndReason::HumanInterrupted => {
+                vec!["Re-read the latest human task before replanning"]
+            }
         }
     }
 
@@ -1144,10 +1343,12 @@ mod tests {
         orch.spawn_parallel_tracks(&knowledge, &task);
 
         let status = orch.status();
-        assert_eq!(
-            status.track_count, 1,
-            "Track count should reflect spawned tracks"
-        );
+        assert_eq!(status.track_event_count, 1);
+        assert_eq!(status.material_packet_count, 3);
+        assert_eq!(status.active_track_count, 3);
+        assert_eq!(status.track_count, 3);
+        assert_eq!(status.track_details.len(), 3);
+        assert_eq!(status.track_details[0].focus, "correctness");
         assert_eq!(status.epoch_count, 0);
     }
 
@@ -1313,6 +1514,81 @@ mod tests {
             "agent_states should have entries"
         );
         // track_details may be empty since no TrackCompleted/TrackFailed events
+    }
+
+    #[test]
+    fn status_exposes_epoch_reasons_and_workflow_verifier_findings_as_diagnostics() {
+        let task = make_looping_task("agent_diag", &["repeat repeat repeat"]);
+        let mut orch = Orchestrator::new(4);
+        orch.regression_thresholds.min_epoch_before_audit = 1;
+        orch.regression_thresholds.auto_terminate = false;
+
+        orch.audit_epoch("agent_diag", &task);
+
+        let finding = crate::harness::workflow::VerificationFinding {
+            verification_id: "vf_goal_demo_001".to_string(),
+            level: crate::harness::workflow::VerificationLevel::Goal,
+            target: "wf_goal_demo@v1".to_string(),
+            result: crate::harness::workflow::VerificationOutcome::Fail,
+            failed_clauses: vec![2],
+            reason_code: "missing_runtime_state".to_string(),
+            summary: "Goal clause 2 cannot be verified from runtime state.".to_string(),
+            evidence_refs: vec!["report_runtime_state".to_string()],
+            minimal_fix_surface: vec!["Persist runtime state before replan".to_string()],
+        };
+        orch.record_verification_findings("agent_diag", &[finding]);
+
+        let status = orch.status();
+        let reason = status
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.reason_code == "tool_loop")
+            .expect("epoch reason should be exposed as a diagnostic");
+        assert_eq!(reason.source, OrchestratorDiagnosticSource::EpochReason);
+        assert_eq!(reason.target.as_deref(), Some("agent_diag"));
+        assert!(!reason.minimal_fix_surface.is_empty());
+
+        let verifier = status
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.reason_code == "missing_runtime_state")
+            .expect("workflow verifier finding should be exposed as a diagnostic");
+        assert_eq!(
+            verifier.source,
+            OrchestratorDiagnosticSource::WorkflowVerifier
+        );
+        assert_eq!(verifier.target.as_deref(), Some("wf_goal_demo@v1"));
+        assert_eq!(verifier.failed_clauses, vec![2]);
+        assert_eq!(
+            verifier.minimal_fix_surface,
+            vec!["Persist runtime state before replan"]
+        );
+    }
+
+    #[test]
+    fn record_verification_findings_deduplicates_identical_diagnostics() {
+        let mut orch = Orchestrator::new(2);
+        let finding = crate::harness::workflow::VerificationFinding {
+            verification_id: "vf_duplicate".to_string(),
+            level: crate::harness::workflow::VerificationLevel::Step,
+            target: "S001".to_string(),
+            result: crate::harness::workflow::VerificationOutcome::Fail,
+            failed_clauses: vec![2],
+            reason_code: "missing_runtime_state".to_string(),
+            summary: "Runtime state was not persisted before replan.".to_string(),
+            evidence_refs: vec!["sr_S001".to_string()],
+            minimal_fix_surface: vec!["Persist runtime state before replan".to_string()],
+        };
+
+        orch.record_verification_findings("agent_diag", &[finding.clone()]);
+        orch.record_verification_findings("agent_diag", &[finding]);
+
+        let diagnostics = orch.status().diagnostics;
+        let matching = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.reason_code == "missing_runtime_state")
+            .count();
+        assert_eq!(matching, 1);
     }
 
     #[test]

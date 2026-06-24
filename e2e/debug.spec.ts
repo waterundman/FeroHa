@@ -45,13 +45,14 @@ test.describe("Debug - Visual Inspection", () => {
     await page.waitForTimeout(200);
 
     // Screenshot 5: Graph tab
-    await page.locator('button[title="Graph"]').click();
+    await page.locator('button[aria-controls="panel-graph"]').click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: "debug/05-graph-view.png", fullPage: true });
     console.log("Graph view rendered");
 
-    // Screenshot 6: Diff tab
-    await page.locator('button[title="Diff"]').click();
+    // Screenshot 6: Diff tab on the human face
+    await page.locator('button[aria-label="切换到人类面"]').click();
+    await page.locator('button[aria-controls="panel-diff"]').click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: "debug/06-diff-view.png", fullPage: true });
     console.log("Diff view rendered");
@@ -73,7 +74,7 @@ test.describe("Debug - Visual Inspection", () => {
     await page.waitForTimeout(300);
 
     // Check word count
-    const wordCount = page.getByText(/words/);
+    const wordCount = page.getByText(/\d+\s*词/);
     if (await wordCount.isVisible()) {
       const countText = await wordCount.textContent();
       console.log("Word count:", countText);

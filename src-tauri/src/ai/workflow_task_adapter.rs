@@ -130,7 +130,7 @@ fn workflow_context_fragment(
 }
 
 fn research_question(dispatch: &StepDispatch) -> String {
-    dispatch
+    let question = dispatch
         .inputs
         .get("question")
         .and_then(|value| value.as_str())
@@ -138,7 +138,24 @@ fn research_question(dispatch: &StepDispatch) -> String {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| research_keywords(dispatch))
-        .unwrap_or_else(|| dispatch.artifact_contract.expected_output.clone())
+        .unwrap_or_else(|| dispatch.artifact_contract.expected_output.clone());
+    let checklist = dispatch
+        .artifact_contract
+        .acceptance_criteria
+        .iter()
+        .map(|criterion| criterion.trim())
+        .filter(|criterion| !criterion.is_empty())
+        .map(|criterion| format!("- [ ] {criterion}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "{question}\n\n\
+         Return a Markdown research report. Include an exact `## Acceptance Check` \
+         section using the checklist below. Mark an item `[x]` only when the report's \
+         cited evidence supports it; otherwise leave it `[ ]`.\n\n\
+         ## Acceptance Check\n{checklist}"
+    )
 }
 
 fn research_keywords(dispatch: &StepDispatch) -> Option<String> {
@@ -226,7 +243,8 @@ mod tests {
             CliCommand::DeepResearch {
                 ref question,
                 max_iterations: None
-            } if question == "What evidence supports the claim?"
+            } if question.starts_with("What evidence supports the claim?")
+                && question.contains("## Acceptance Check")
         ));
         assert!(matches!(task.task_type, TaskType::DeepDive));
         assert_eq!(task.task_intent, Some(TaskIntentType::Research));
@@ -236,10 +254,15 @@ mod tests {
         assert!(matches!(task.status, TaskStatus::Pending));
         assert_eq!(task.created_at, 100);
         assert_eq!(
-            task.prompt.as_deref(),
-            Some("What evidence supports the claim?")
+            task.prompt.as_deref().map(|prompt| prompt.starts_with(
+                "What evidence supports the claim?"
+            )),
+            Some(true)
         );
-        assert_eq!(task.content, "What evidence supports the claim?");
+        assert!(task.content.starts_with("What evidence supports the claim?"));
+        assert!(task
+            .content
+            .contains("- [ ] Every claim has a source"));
         assert_eq!(task.max_iterations, DEFAULT_MAX_ITERATIONS);
 
         let context = workflow_task_context(&task).unwrap();
@@ -284,6 +307,20 @@ mod tests {
         assert_eq!(capability, WorkflowStepKind::Implement);
         assert_eq!(reason_code, "unsupported_workflow_capability");
         assert_eq!(summary, "No narrow-loop executor for Implement".to_string());
+    }
+
+    #[test]
+    fn research_prompt_requires_an_exact_machine_checkable_acceptance_section() {
+        let dispatch = research_dispatch("run_demo", "S001");
+
+        let AdaptedWorkflowTask::Task(task) =
+            WorkflowTaskAdapter::adapt(&dispatch, 100).unwrap()
+        else {
+            panic!("expected task");
+        };
+
+        assert!(task.content.contains("## Acceptance Check"));
+        assert!(task.content.contains("- [ ] Every claim has a source"));
     }
 
     #[test]

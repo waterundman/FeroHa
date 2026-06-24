@@ -1,13 +1,24 @@
-use super::agent_scheduler::{AgentScheduler, TaskStatus};
-use super::workflow_task_adapter::{AdaptedWorkflowTask, WorkflowTaskAdapter};
+use super::agent_scheduler::{AgentScheduler, AgentTask, TaskStatus};
+use super::dream_memory;
+use super::manager::AiManagerService;
+use super::research_trace;
+use super::workflow_task_adapter::{
+    workflow_task_context, AdaptedWorkflowTask, WorkflowTaskAdapter,
+};
+use crate::harness::scientist::{Scientist, ScientistResult};
 use crate::harness::workflow::{
-    safe_runtime_component, AgentRegistry, ArtifactContract, GoalContract, OrchestratorOutput,
-    RunStatus, StepDispatch, WorkflowError, WorkflowIr, WorkflowRunState,
-    WorkflowRuntimeEventChain, WorkflowRuntimeEventStore, WorkflowStep, WorkflowStepStatus,
+    safe_runtime_component, AgentRegistry, ArtifactContract, ArtifactRef, EvidenceRef, GoalContract,
+    OrchestratorOutput, RunStatus, StepDispatch, StepReport, StepReportStatus,
+    VerificationFinding, VerificationLevel, VerificationOutcome, WorkflowError, WorkflowIr,
+    WorkflowRunState, WorkflowRuntimeEventChain, WorkflowRuntimeEventStore, WorkflowStatus,
+    WorkflowStep, WorkflowStepStatus,
 };
 use crate::harness::workflow_runtime::{
     WorkflowDispatchRecord, WorkflowDispatchStatus, WorkflowRuntimeBundle, WorkflowRuntimeStore,
+    WorkflowTaskContext,
 };
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub struct WorkflowRuntimeService {
@@ -35,6 +46,338 @@ impl WorkflowRuntimeService {
 
     pub fn get(&self, run_id: &str) -> Result<WorkflowRuntimeBundle, WorkflowError> {
         self.store.read(run_id)
+    }
+
+    pub fn list(&self) -> Result<Vec<WorkflowRuntimeBundle>, WorkflowError> {
+        let mut bundles = self
+            .store
+            .list_run_ids()?
+            .into_iter()
+            .map(|run_id| self.store.read(&run_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        bundles.sort_by(|left, right| compare_updated_at_desc(&left.updated_at, &right.updated_at));
+        Ok(bundles)
+    }
+
+    pub fn record_task_running(
+        &self,
+        task: &AgentTask,
+        now: u64,
+    ) -> Result<Option<WorkflowRuntimeBundle>, WorkflowError> {
+        let Some(context) = workflow_task_context(task) else {
+            return Ok(None);
+        };
+        let mut bundle = self.store.read(&context.run_id)?;
+        validate_task_runtime_context(&bundle, task, &context)?;
+        let dispatch =
+            self.dispatch_for_step(&bundle, &context.step_id, context.attempt)?;
+        let record = dispatch_record_mut(&mut bundle, &context.step_id, context.attempt)
+            .ok_or_else(|| missing_task_dispatch_error(task, &context.step_id))?;
+        set_dispatch_state(
+            record,
+            WorkflowDispatchStatus::Running,
+            Some("scheduler task is running".to_string()),
+        );
+        set_workflow_step_status(
+            &mut bundle.workflow,
+            &context.step_id,
+            WorkflowStepStatus::Running,
+        )?;
+        add_active_step(&mut bundle.run.active_step_ids, &context.step_id);
+        bundle.updated_at = now.to_string();
+        self.store.write(&bundle)?;
+        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_running(
+            &dispatch,
+            &task.id,
+            now.to_string(),
+        ))?;
+        Ok(Some(bundle))
+    }
+
+    pub fn record_task_completion(
+        &self,
+        task: &AgentTask,
+        now: u64,
+        _scheduler: &mut AgentScheduler,
+    ) -> Result<Option<WorkflowRuntimeBundle>, WorkflowError> {
+        let Some(context) = workflow_task_context(task) else {
+            return Ok(None);
+        };
+        if !matches!(task.status, TaskStatus::Done { .. }) {
+            return Err(WorkflowError::RuntimeStateParse(format!(
+                "workflow task {} is not completed",
+                task.id
+            )));
+        }
+
+        let mut bundle = self.store.read(&context.run_id)?;
+        validate_task_runtime_context(&bundle, task, &context)?;
+        let dispatch =
+            self.dispatch_for_step(&bundle, &context.step_id, context.attempt)?;
+        let runtime_root = self.runtime_root(&context.run_id)?;
+        let dualtrack_dir = runtime_root.join(".dualtrack");
+        let task_id = safe_runtime_component(&task.id)?;
+        let result_path = dualtrack_dir
+            .join("research")
+            .join("results")
+            .join(task_id)
+            .join("result.md");
+        let result_content = std::fs::read_to_string(&result_path).ok();
+        let working_artifact = dream_memory::working_result_artifact(
+            &runtime_root,
+            task_id,
+            &context.step_id,
+            &now.to_string(),
+        )
+        .ok();
+        if let Some(artifact) = working_artifact.clone() {
+            upsert_artifact(&mut bundle.artifacts, artifact);
+        }
+
+        let trace = research_trace::get_task_trace(&dualtrack_dir, task_id).ok();
+        let knowledge = Scientist::extract_knowledge(task);
+        let source_refs = task_source_refs(task);
+        let confidence = task_evidence_confidence(task);
+        let checked_criteria =
+            checked_acceptance_criteria(result_content.as_deref().unwrap_or_default());
+        let evidence_refs = working_artifact
+            .iter()
+            .map(|artifact| artifact.uri.clone())
+            .chain(source_refs.iter().cloned())
+            .collect::<Vec<_>>();
+        let step = bundle
+            .workflow
+            .steps
+            .iter()
+            .find(|step| step.step_id == context.step_id)
+            .cloned()
+            .ok_or_else(|| missing_task_dispatch_error(task, &context.step_id))?;
+        let findings = build_completion_findings(CompletionChecks {
+            run_id: &context.run_id,
+            task_id,
+            step: &step,
+            working_artifact: working_artifact.as_ref(),
+            result_content: result_content.as_deref(),
+            trace_complete: trace.is_some(),
+            context_present: trace
+                .as_ref()
+                .and_then(|trace| trace.context.as_ref())
+                .is_some(),
+            evidence_present: !source_refs.is_empty(),
+            claims_present: !knowledge.claims.is_empty(),
+            checked_criteria: &checked_criteria,
+            evidence_refs: &evidence_refs,
+        });
+        let all_pass = findings
+            .iter()
+            .all(|finding| finding.result == VerificationOutcome::Pass);
+        let report = StepReport {
+            report_id: format!(
+                "report_{}_{}_a{}",
+                context.run_id, context.step_id, context.attempt
+            ),
+            step_id: context.step_id.clone(),
+            attempt: context.attempt,
+            status: if working_artifact.is_some()
+                && result_content
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|result| !result.is_empty())
+            {
+                StepReportStatus::Completed
+            } else {
+                StepReportStatus::Failed
+            },
+            summary: "Research result recorded in Dream Working Memory".to_string(),
+            artifacts: working_artifact.iter().cloned().collect(),
+            evidence: source_refs
+                .iter()
+                .map(|source| EvidenceRef {
+                    file: source.clone(),
+                    lines: Vec::new(),
+                    claim: "retrieval evidence reference".to_string(),
+                })
+                .collect(),
+            risks: findings
+                .iter()
+                .filter(|finding| finding.result != VerificationOutcome::Pass)
+                .map(|finding| finding.reason_code.clone())
+                .collect(),
+            blocked_by: Vec::new(),
+            suggested_next_steps: Vec::new(),
+            resource_usage: serde_json::json!({
+                "claim_count": knowledge.claims.len(),
+                "evidence_reference_count": source_refs.len(),
+            }),
+            confidence,
+        };
+        bundle
+            .step_reports
+            .retain(|existing| existing.report_id != report.report_id);
+        bundle.step_reports.push(report.clone());
+        bundle
+            .verification_findings
+            .retain(|finding| finding.target != context.step_id);
+        bundle.verification_findings.extend(findings.clone());
+
+        let record = dispatch_record_mut(&mut bundle, &context.step_id, context.attempt)
+            .ok_or_else(|| missing_task_dispatch_error(task, &context.step_id))?;
+        set_dispatch_state(
+            record,
+            WorkflowDispatchStatus::Reported,
+            Some("research result recorded".to_string()),
+        );
+        remove_active_step(&mut bundle.run.active_step_ids, &context.step_id);
+        bundle.updated_at = now.to_string();
+
+        let semantic_artifact = if all_pass {
+            let working_artifact = working_artifact.as_ref().ok_or_else(|| {
+                WorkflowError::RuntimeStateIo(
+                    "verified workflow result has no Working artifact".to_string(),
+                )
+            })?;
+            let scientist_result =
+                Scientist::build_result(knowledge, None, None, None, confidence);
+            let semantic_content = render_semantic_workflow_memory(
+                &bundle,
+                task,
+                working_artifact,
+                &scientist_result,
+                &source_refs,
+                &step,
+            );
+            let artifact = dream_memory::write_semantic_workflow_memory(
+                &dualtrack_dir,
+                &bundle.workflow.workflow_id,
+                &bundle.run.run_id,
+                &context.step_id,
+                &semantic_content,
+                &now.to_string(),
+            )
+            .map_err(WorkflowError::RuntimeStateIo)?;
+            upsert_artifact(&mut bundle.artifacts, artifact.clone());
+            set_workflow_step_status(
+                &mut bundle.workflow,
+                &context.step_id,
+                WorkflowStepStatus::Verified,
+            )?;
+            bundle.workflow.status = WorkflowStatus::Completed;
+            bundle.run.status = RunStatus::Succeeded;
+            bundle.run.ended_at = Some(now.to_string());
+            Some(artifact)
+        } else {
+            set_workflow_step_status(
+                &mut bundle.workflow,
+                &context.step_id,
+                WorkflowStepStatus::Failed,
+            )?;
+            bundle.workflow.status = WorkflowStatus::Aborted;
+            bundle.run.status = RunStatus::Failed;
+            bundle.run.ended_at = Some(now.to_string());
+            None
+        };
+
+        self.store.write(&bundle)?;
+        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_reported(
+            &dispatch,
+            &task.id,
+            "Research result persisted in Dream Working Memory",
+            now.to_string(),
+        ))?;
+        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_assessed(
+            &bundle.workflow.workflow_id,
+            &bundle.run.run_id,
+            &report,
+            &findings,
+            now.to_string(),
+        ))?;
+
+        if let (Some(working_artifact), Some(semantic_artifact)) =
+            (working_artifact.as_ref(), semantic_artifact.as_ref())
+        {
+            self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_verified(
+                &dispatch,
+                &task.id,
+                working_artifact,
+                now.to_string(),
+            ))?;
+            self.ensure_event_chain(&WorkflowRuntimeEventChain::from_semantic_promoted(
+                &bundle.workflow.workflow_id,
+                &bundle.run.run_id,
+                &context.step_id,
+                semantic_artifact,
+                now.to_string(),
+            ))?;
+            self.ensure_event_chain(&WorkflowRuntimeEventChain::from_run_succeeded(
+                &bundle.workflow,
+                &bundle.run,
+                now.to_string(),
+            ))?;
+        } else {
+            let reason_code = findings
+                .iter()
+                .find(|finding| finding.result != VerificationOutcome::Pass)
+                .map(|finding| finding.reason_code.as_str())
+                .unwrap_or("verification_failed");
+            self.ensure_event_chain(&WorkflowRuntimeEventChain::from_run_failed(
+                &bundle.workflow,
+                &bundle.run,
+                reason_code,
+                "Workflow verification failed; Working artifacts were retained.",
+                now.to_string(),
+            ))?;
+        }
+
+        Ok(Some(bundle))
+    }
+
+    pub fn record_task_failure(
+        &self,
+        task: &AgentTask,
+        reason_code: &str,
+        summary: &str,
+        now: u64,
+    ) -> Result<Option<WorkflowRuntimeBundle>, WorkflowError> {
+        let Some(context) = workflow_task_context(task) else {
+            return Ok(None);
+        };
+        let mut bundle = self.store.read(&context.run_id)?;
+        validate_task_runtime_context(&bundle, task, &context)?;
+        let dispatch =
+            self.dispatch_for_step(&bundle, &context.step_id, context.attempt)?;
+        let record = dispatch_record_mut(&mut bundle, &context.step_id, context.attempt)
+            .ok_or_else(|| missing_task_dispatch_error(task, &context.step_id))?;
+        set_dispatch_state(
+            record,
+            WorkflowDispatchStatus::Failed,
+            Some(summary.to_string()),
+        );
+        set_workflow_step_status(
+            &mut bundle.workflow,
+            &context.step_id,
+            WorkflowStepStatus::Failed,
+        )?;
+        remove_active_step(&mut bundle.run.active_step_ids, &context.step_id);
+        bundle.workflow.status = WorkflowStatus::Aborted;
+        bundle.run.status = RunStatus::Failed;
+        bundle.run.ended_at = Some(now.to_string());
+        bundle.updated_at = now.to_string();
+        self.store.write(&bundle)?;
+        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_failed(
+            &dispatch,
+            &task.id,
+            reason_code,
+            summary,
+            now.to_string(),
+        ))?;
+        self.ensure_event_chain(&WorkflowRuntimeEventChain::from_run_failed(
+            &bundle.workflow,
+            &bundle.run,
+            reason_code,
+            summary,
+            now.to_string(),
+        ))?;
+        Ok(Some(bundle))
     }
 
     pub fn start(
@@ -65,6 +408,9 @@ impl WorkflowRuntimeService {
             run,
             registry,
             dispatches: Vec::new(),
+            artifacts: Vec::new(),
+            step_reports: Vec::new(),
+            verification_findings: Vec::new(),
             updated_at: now.to_string(),
         };
         self.store.write(&bundle)?;
@@ -268,11 +614,11 @@ impl WorkflowRuntimeService {
                     now.to_string(),
                 ))?;
             }
-            TaskStatus::Done { result, .. } => {
+            TaskStatus::Done { .. } => {
                 changed |= set_dispatch_state(
                     &mut bundle.dispatches[record_index],
                     WorkflowDispatchStatus::Reported,
-                    Some(result.clone()),
+                    Some("research result recorded".to_string()),
                 );
                 changed |= set_workflow_step_status(
                     &mut bundle.workflow,
@@ -287,7 +633,7 @@ impl WorkflowRuntimeService {
                 self.ensure_event_chain(&WorkflowRuntimeEventChain::from_step_reported(
                     &dispatch,
                     task_id,
-                    result.clone(),
+                    "Research result persisted in Dream Working Memory".to_string(),
                     now.to_string(),
                 ))?;
             }
@@ -364,8 +710,9 @@ impl WorkflowRuntimeService {
             AdaptedWorkflowTask::Task(task) => {
                 let task_id = task.id.clone();
                 if scheduler.get_task(&task_id).is_none() {
-                    scheduler.submit(task);
-                    scheduler
+                    let mut manager = AiManagerService::new(scheduler);
+                    manager.submit(task);
+                    manager
                         .approve(&task_id, "orchestrator")
                         .map_err(WorkflowError::RuntimeStateIo)?;
                 }
@@ -543,6 +890,348 @@ impl WorkflowRuntimeService {
     }
 }
 
+fn compare_updated_at_desc(left: &str, right: &str) -> Ordering {
+    match (left.parse::<u128>(), right.parse::<u128>()) {
+        (Ok(left), Ok(right)) => right.cmp(&left),
+        _ => right.cmp(left),
+    }
+}
+
+fn validate_task_runtime_context(
+    bundle: &WorkflowRuntimeBundle,
+    task: &AgentTask,
+    context: &WorkflowTaskContext,
+) -> Result<(), WorkflowError> {
+    if context.workflow_id != bundle.workflow.workflow_id {
+        return Err(WorkflowError::RuntimeStateParse(format!(
+            "workflow task {} references workflow {}, expected {}",
+            task.id, context.workflow_id, bundle.workflow.workflow_id
+        )));
+    }
+    let record = dispatch_record(bundle, &context.step_id, context.attempt)
+        .ok_or_else(|| missing_task_dispatch_error(task, &context.step_id))?;
+    if record.task_id.as_deref() != Some(task.id.as_str()) {
+        return Err(WorkflowError::RuntimeStateParse(format!(
+            "workflow task {} does not match dispatch task {:?}",
+            task.id, record.task_id
+        )));
+    }
+    Ok(())
+}
+
+fn missing_task_dispatch_error(task: &AgentTask, step_id: &str) -> WorkflowError {
+    WorkflowError::RuntimeStateParse(format!(
+        "workflow task {} references missing dispatch for step {}",
+        task.id, step_id
+    ))
+}
+
+fn upsert_artifact(artifacts: &mut Vec<ArtifactRef>, artifact: ArtifactRef) {
+    artifacts.retain(|existing| {
+        existing.artifact_id != artifact.artifact_id && existing.uri != artifact.uri
+    });
+    artifacts.push(artifact);
+}
+
+fn task_source_refs(task: &AgentTask) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    for result in &task.subagent_results {
+        for entry in &result.entries {
+            let source_ref = entry
+                .url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    let title = entry.title.trim();
+                    (!title.is_empty()).then(|| format!("{}:{}", entry.source, title))
+                });
+            if let Some(source_ref) = source_ref {
+                if seen.insert(source_ref.clone()) {
+                    refs.push(source_ref);
+                }
+            }
+        }
+    }
+    refs
+}
+
+fn task_evidence_confidence(task: &AgentTask) -> f32 {
+    task.subagent_results
+        .iter()
+        .flat_map(|result| result.entries.iter())
+        .map(|entry| entry.relevance_score)
+        .fold(0.0_f32, f32::max)
+        .clamp(0.0, 1.0)
+}
+
+fn checked_acceptance_criteria(markdown: &str) -> HashSet<String> {
+    let mut in_acceptance_section = false;
+    let mut checked = HashSet::new();
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            in_acceptance_section = heading.trim().eq_ignore_ascii_case("Acceptance Check");
+            continue;
+        }
+        if !in_acceptance_section {
+            continue;
+        }
+        let criterion = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "));
+        if let Some(criterion) = criterion {
+            checked.insert(normalize_contract_text(criterion));
+        }
+    }
+
+    checked
+}
+
+fn normalize_contract_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Clone, Copy)]
+struct CompletionChecks<'a> {
+    run_id: &'a str,
+    task_id: &'a str,
+    step: &'a WorkflowStep,
+    working_artifact: Option<&'a ArtifactRef>,
+    result_content: Option<&'a str>,
+    trace_complete: bool,
+    context_present: bool,
+    evidence_present: bool,
+    claims_present: bool,
+    checked_criteria: &'a HashSet<String>,
+    evidence_refs: &'a [String],
+}
+
+fn build_completion_findings(checks: CompletionChecks<'_>) -> Vec<VerificationFinding> {
+    let all_clauses = checks.step.goal_alignment.success_clauses.clone();
+    let expected_working_uri = format!(
+        ".dualtrack/research/results/{}/result.md",
+        checks.task_id
+    );
+    let mut findings = Vec::new();
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "working_artifact",
+        checks.working_artifact.is_some(),
+        "working_artifact_present",
+        "working_artifact_missing",
+        "Working result artifact is present.",
+        "Working result artifact is missing.",
+        &all_clauses,
+        vec![expected_working_uri.clone()],
+    );
+    let result_present = checks
+        .result_content
+        .map(str::trim)
+        .is_some_and(|result| !result.is_empty());
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "result_content",
+        result_present,
+        "research_result_present",
+        "empty_research_result",
+        "Research result contains report content.",
+        "Research result is empty or unreadable.",
+        &all_clauses,
+        vec![expected_working_uri.clone()],
+    );
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "trace",
+        checks.trace_complete,
+        "research_trace_present",
+        "research_trace_missing",
+        "Research path and trace files are present.",
+        "Research path or trace files are missing.",
+        &all_clauses,
+        vec![format!(
+            ".dualtrack/research/paths/{}",
+            checks.task_id
+        )],
+    );
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "context",
+        checks.context_present,
+        "research_context_present",
+        "research_context_missing",
+        "Research context is present.",
+        "Research context is missing.",
+        &all_clauses,
+        vec![expected_working_uri.clone()],
+    );
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "evidence",
+        checks.evidence_present,
+        "evidence_present",
+        "evidence_missing",
+        "Retrieval evidence references are present.",
+        "Retrieval evidence references are missing.",
+        &all_clauses,
+        vec![expected_working_uri.clone()],
+    );
+    push_completion_finding(
+        &mut findings,
+        checks,
+        "claims",
+        checks.claims_present,
+        "claims_present",
+        "claims_missing",
+        "Scientist extracted claims from the research report.",
+        "Scientist could not extract claims from the research report.",
+        &all_clauses,
+        vec![expected_working_uri],
+    );
+
+    for (index, criterion) in checks.step.acceptance_criteria.iter().enumerate() {
+        let normalized = normalize_contract_text(criterion);
+        let satisfied = checks.checked_criteria.contains(&normalized);
+        let clause = checks
+            .step
+            .goal_alignment
+            .success_clauses
+            .get(index)
+            .copied()
+            .into_iter()
+            .collect::<Vec<_>>();
+        push_completion_finding(
+            &mut findings,
+            checks,
+            &format!("acceptance_{}", index + 1),
+            satisfied,
+            "acceptance_criterion_checked",
+            "acceptance_criterion_unchecked",
+            &format!("Acceptance criterion {} is checked.", index + 1),
+            &format!("Acceptance criterion {} is not checked.", index + 1),
+            &clause,
+            vec![criterion.clone()],
+        );
+    }
+
+    findings
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_completion_finding(
+    findings: &mut Vec<VerificationFinding>,
+    checks: CompletionChecks<'_>,
+    suffix: &str,
+    passed: bool,
+    pass_reason_code: &str,
+    fail_reason_code: &str,
+    pass_summary: &str,
+    fail_summary: &str,
+    failed_clauses: &[usize],
+    minimal_fix_surface: Vec<String>,
+) {
+    findings.push(VerificationFinding {
+        verification_id: format!(
+            "verify_{}_{}_{}",
+            checks.run_id, checks.step.step_id, suffix
+        ),
+        level: VerificationLevel::Step,
+        target: checks.step.step_id.clone(),
+        result: if passed {
+            VerificationOutcome::Pass
+        } else {
+            VerificationOutcome::Fail
+        },
+        failed_clauses: if passed {
+            Vec::new()
+        } else {
+            failed_clauses.to_vec()
+        },
+        reason_code: if passed {
+            pass_reason_code.to_string()
+        } else {
+            fail_reason_code.to_string()
+        },
+        summary: if passed {
+            pass_summary.to_string()
+        } else {
+            fail_summary.to_string()
+        },
+        evidence_refs: checks.evidence_refs.to_vec(),
+        minimal_fix_surface: if passed {
+            Vec::new()
+        } else {
+            minimal_fix_surface
+        },
+    });
+}
+
+fn render_semantic_workflow_memory(
+    bundle: &WorkflowRuntimeBundle,
+    task: &AgentTask,
+    working_artifact: &ArtifactRef,
+    scientist: &ScientistResult,
+    source_refs: &[String],
+    step: &WorkflowStep,
+) -> String {
+    let claims = scientist
+        .claims
+        .iter()
+        .map(|claim| format!("- {claim}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let evidence_chain = scientist
+        .claims
+        .iter()
+        .map(|claim| {
+            if source_refs.is_empty() {
+                format!("- {claim} -> no source reference")
+            } else {
+                format!("- {claim} -> {}", source_refs.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let acceptance = step
+        .acceptance_criteria
+        .iter()
+        .map(|criterion| format!("- [x] {criterion}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "# Verified Workflow Knowledge\n\n\
+         - Workflow ID: `{}`\n\
+         - Run ID: `{}`\n\
+         - Task ID: `{}`\n\
+         - Working artifact: `{}`\n\
+         - Working artifact hash: `{}`\n\
+         - Confidence: {:.3}\n\
+         - Verification kernel: `{}`\n\n\
+         ## Claims\n\n{}\n\n\
+         ## Evidence Chain\n\n{}\n\n\
+         ## Acceptance Criteria\n\n{}\n",
+        bundle.workflow.workflow_id,
+        bundle.run.run_id,
+        task.id,
+        working_artifact.uri,
+        working_artifact.hash,
+        scientist.overall_confidence,
+        scientist.kernel_name,
+        claims,
+        evidence_chain,
+        acceptance,
+    )
+}
+
 fn runtime_event_matches(
     candidate: &crate::harness::workflow::HarnessEvent,
     expected: &crate::harness::workflow::HarnessEvent,
@@ -557,6 +1246,9 @@ fn runtime_event_matches(
         "attempt",
         "task_id",
         "reason_code",
+        "report_id",
+        "verification_id",
+        "artifact_id",
     ] {
         if let Some(expected_value) = expected.attributes.get(key) {
             if candidate.attributes.get(key) != Some(expected_value) {
@@ -763,10 +1455,11 @@ fn remove_active_step(active_step_ids: &mut Vec<String>, step_id: &str) -> bool 
 mod tests {
     use super::*;
     use crate::ai::agent_scheduler::AgentScheduler;
+    use crate::ai::research_trace::{self, TaskContext, TaskEvidence, TaskEvidenceEntry};
     use crate::harness::workflow::{
         AgentRegistry, AgentRegistryEntry, ControlPolicy, GoalAlignment, GoalContract, RetryPolicy,
-        WorkflowIr, WorkflowStatus, WorkflowStep, WorkflowStepKind, WorkflowStepMode,
-        WorkflowStepStatus,
+        RunStatus, VerificationOutcome, WorkflowIr, WorkflowStatus, WorkflowStep,
+        WorkflowStepKind, WorkflowStepMode, WorkflowStepStatus,
     };
     use crate::harness::workflow_runtime::WorkflowDispatchStatus;
     use serde_json::json;
@@ -1070,7 +1763,7 @@ mod tests {
         );
         assert_eq!(
             reported.dispatches[0].detail.as_deref(),
-            Some("research report body")
+            Some("research result recorded")
         );
         assert_eq!(
             reported.workflow.steps[0].status,
@@ -1084,6 +1777,205 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.event_name == "workflow.step.reported"));
+    }
+
+    #[test]
+    fn reported_dispatch_keeps_short_detail_instead_of_scheduler_result_body() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkflowRuntimeService::new(root.path());
+        let mut scheduler = AgentScheduler::new(1);
+        let started = service
+            .start(
+                goal(),
+                workflow_with_ready_research(),
+                registry(),
+                "run_reference_only",
+                &mut scheduler,
+                100,
+            )
+            .unwrap();
+        let task_id = started.dispatches[0].task_id.clone().unwrap();
+        scheduler.complete(
+            &task_id,
+            "full model response body that must stay in Dream working memory".to_string(),
+        );
+
+        let bundle = service
+            .resume("run_reference_only", &mut scheduler, 200)
+            .unwrap();
+
+        assert_eq!(
+            bundle.dispatches[0].detail.as_deref(),
+            Some("research result recorded")
+        );
+        assert!(!serde_json::to_string(&bundle)
+            .unwrap()
+            .contains("full model response body"));
+        let ledger = std::fs::read_to_string(
+            root.path()
+                .join(".harness/runs/run_reference_only/events.jsonl"),
+        )
+        .unwrap();
+        assert!(!ledger.contains("full model response body"));
+    }
+
+    #[test]
+    fn completed_research_promotes_verified_semantic_memory_and_succeeds_run() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkflowRuntimeService::new(root.path());
+        let mut scheduler = AgentScheduler::new(1);
+        let bundle = service
+            .start(
+                goal(),
+                workflow_with_ready_research(),
+                registry(),
+                "run_completion",
+                &mut scheduler,
+                100,
+            )
+            .unwrap();
+        let task_id = bundle.dispatches[0].task_id.clone().unwrap();
+        let dualtrack = root.path().join(".dualtrack");
+        let context = TaskContext {
+            intent: "Map Bayesian evidence".to_string(),
+            retrieval_evidence: vec![TaskEvidence {
+                source: "web".to_string(),
+                entries: vec![TaskEvidenceEntry {
+                    title: "Bayesian evidence".to_string(),
+                    snippet: "Posterior updates preserve uncertainty.".to_string(),
+                    url: Some("https://example.test/evidence".to_string()),
+                    authors: vec![],
+                    year: Some(2026),
+                    source: "web".to_string(),
+                    relevance_score: 0.9,
+                }],
+                hop: 0,
+                generated_keywords: vec!["bayesian evidence".to_string()],
+                total_found: 1,
+            }],
+            ..TaskContext::default()
+        };
+        research_trace::write_path_log(
+            &dualtrack,
+            &task_id,
+            0,
+            "bayesian evidence",
+            "web",
+            &["https://example.test/evidence".to_string()],
+            &[],
+            "accepted source",
+            Some(&context),
+        )
+        .unwrap();
+        research_trace::write_cot_log(
+            &dualtrack,
+            &task_id,
+            "research trace",
+            Some(&context),
+        )
+        .unwrap();
+        let result = "## Findings\n\nEvidence-backed conclusion.\n\n\
+                      ## Acceptance Check\n\n- [x] A dispatch record is persisted";
+        research_trace::write_result_md(&dualtrack, &task_id, result, Some(&context)).unwrap();
+        research_trace::write_context(&dualtrack, &task_id, &context).unwrap();
+        scheduler.complete_with_context_and_dream_snapshot(
+            &task_id,
+            result.to_string(),
+            Some(&context),
+            None,
+        );
+        let task = scheduler.get_task(&task_id).unwrap().clone();
+
+        let bundle = service
+            .record_task_completion(&task, 200, &mut scheduler)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bundle.workflow.steps[0].status,
+            WorkflowStepStatus::Verified
+        );
+        assert_eq!(bundle.run.status, RunStatus::Succeeded);
+        assert!(bundle.run.ended_at.is_some());
+        assert_eq!(bundle.step_reports.len(), 1);
+        assert!(bundle
+            .verification_findings
+            .iter()
+            .all(|finding| finding.result == VerificationOutcome::Pass));
+        assert!(bundle.artifacts.iter().any(|artifact| {
+            artifact
+                .uri
+                .starts_with(".dualtrack/memory/semantic/workflows/")
+        }));
+    }
+
+    #[test]
+    fn missing_evidence_keeps_working_artifact_and_blocks_semantic_promotion() {
+        let root = tempfile::tempdir().unwrap();
+        let service = WorkflowRuntimeService::new(root.path());
+        let mut scheduler = AgentScheduler::new(1);
+        let bundle = service
+            .start(
+                goal(),
+                workflow_with_ready_research(),
+                registry(),
+                "run_missing_evidence",
+                &mut scheduler,
+                100,
+            )
+            .unwrap();
+        let task_id = bundle.dispatches[0].task_id.clone().unwrap();
+        let dualtrack = root.path().join(".dualtrack");
+        let context = TaskContext::default();
+        research_trace::write_path_log(
+            &dualtrack,
+            &task_id,
+            0,
+            "unsupported conclusion",
+            "local",
+            &[],
+            &[],
+            "no evidence",
+            Some(&context),
+        )
+        .unwrap();
+        research_trace::write_cot_log(
+            &dualtrack,
+            &task_id,
+            "research trace",
+            Some(&context),
+        )
+        .unwrap();
+        let result = "## Findings\n\nUnsupported conclusion.\n\n\
+                      ## Acceptance Check\n\n- [x] A dispatch record is persisted";
+        research_trace::write_result_md(&dualtrack, &task_id, result, Some(&context)).unwrap();
+        research_trace::write_context(&dualtrack, &task_id, &context).unwrap();
+        scheduler.complete_with_context_and_dream_snapshot(
+            &task_id,
+            result.to_string(),
+            Some(&context),
+            None,
+        );
+        let task = scheduler.get_task(&task_id).unwrap().clone();
+
+        let bundle = service
+            .record_task_completion(&task, 200, &mut scheduler)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bundle.run.status, RunStatus::Failed);
+        assert!(bundle
+            .verification_findings
+            .iter()
+            .any(|finding| finding.reason_code == "evidence_missing"));
+        assert!(bundle
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.uri.ends_with("/result.md")));
+        assert!(!root
+            .path()
+            .join(".dualtrack/memory/semantic/workflows")
+            .exists());
     }
 
     #[test]

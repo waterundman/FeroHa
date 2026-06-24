@@ -1,6 +1,8 @@
 import { useState, useCallback } from "react";
 import FeroHaIcon from "./FeroHaIcon";
 import type { LegacyCommandCardDefinition, CommandCategory } from "../types/command-card";
+import { useSettingsStore } from "../hooks/useSettings";
+import { commandCardSkillDescriptor } from "../lib/commandCardSkill";
 
 export interface CommandCardProps {
   card: LegacyCommandCardDefinition;
@@ -16,6 +18,8 @@ export default function CommandCard({
   onHover,
 }: CommandCardProps) {
   const [isHovered, setIsHovered] = useState(false);
+  const llmReady = useSettingsStore((s) => s.settings.llmProvider === "ollama" || s.settings.llmApiKey.trim().length > 0);
+  const skill = commandCardSkillDescriptor(card, { llmReady });
 
   const handleClick = useCallback(() => {
     onClick(card);
@@ -49,15 +53,17 @@ export default function CommandCard({
   const getCategoryLabel = (category: CommandCategory): string => {
     switch (category) {
       case "content":
-        return "Content";
+        return "内容";
       case "analysis":
-        return "Analysis";
+        return "分析";
       case "format":
-        return "Format";
+        return "格式";
       case "system":
-        return "System";
+        return "系统";
+      case "agent":
+        return "Agent";
       default:
-        return "Other";
+        return "其他";
     }
   };
 
@@ -94,12 +100,15 @@ export default function CommandCard({
       </div>
 
       <div className="card-footer">
+        <span className={`card-skill-status ${skill.status}`}>
+          {skill.statusLabel}
+        </span>
         {card.tags.slice(0, 3).map((tag) => (
           <span key={tag} className="card-tag">
             {tag}
           </span>
         ))}
-        {card.isCustom && <span className="card-custom-badge">Custom</span>}
+        {card.isCustom && <span className="card-custom-badge">自定义</span>}
       </div>
 
       {isHovered && (
@@ -109,6 +118,11 @@ export default function CommandCard({
             <span className="tooltip-title">{card.label}</span>
           </div>
           <p className="tooltip-description">{card.description}</p>
+          <div className="tooltip-skill">
+            <span>{skill.skillId}</span>
+            <span>{skill.executionPath}</span>
+            <span>{skill.capabilities.join(" / ")}</span>
+          </div>
           <div className="tooltip-params">
             {Object.entries(card.params).map(([key, defaultValue]) => (
               <div key={key} className="tooltip-param">
@@ -169,8 +183,7 @@ export default function CommandCard({
           border-radius: 4px;
           color: var(--bg-primary);
           font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
+          letter-spacing: 0;
         }
 
         .card-body {
@@ -209,6 +222,20 @@ export default function CommandCard({
           background: var(--bg-hover);
           border-radius: 4px;
           color: var(--text-secondary);
+        }
+
+        .card-skill-status {
+          font-size: 10px;
+          padding: 2px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--border-color);
+          color: var(--accent-primary);
+          background: var(--bg-secondary);
+        }
+
+        .card-skill-status.needs-api {
+          color: var(--diff-warn);
+          border-color: var(--diff-warn);
         }
 
         .card-custom-badge {
@@ -277,6 +304,19 @@ export default function CommandCard({
           display: flex;
           flex-direction: column;
           gap: 4px;
+        }
+
+        .tooltip-skill {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding: 8px;
+          margin-bottom: 10px;
+          border-radius: 6px;
+          background: var(--bg-secondary);
+          color: var(--text-secondary);
+          font-size: 11px;
+          overflow-wrap: anywhere;
         }
 
         .tooltip-param {

@@ -49,6 +49,62 @@ pub enum Violation {
     UnsupportedChain(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ViolationSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViolationDiagnostic {
+    pub violation: Violation,
+    pub message: String,
+    pub severity: ViolationSeverity,
+    pub repair_hint: Option<String>,
+}
+
+impl Violation {
+    pub fn severity(&self) -> ViolationSeverity {
+        match self {
+            Violation::CycleDetected(_)
+            | Violation::DanglingReference(_)
+            | Violation::DirectConflict(_, _) => ViolationSeverity::Error,
+            Violation::UnsupportedChain(_) => ViolationSeverity::Warning,
+        }
+    }
+
+    pub fn repair_hint(&self) -> Option<String> {
+        match self {
+            Violation::CycleDetected(_) => Some(
+                "Break the circular implication/support chain or mark one edge as non-structural."
+                    .to_string(),
+            ),
+            Violation::DanglingReference(id) => {
+                Some(format!("Add proposition `{}` or remove the relation that references it.", id))
+            }
+            Violation::DirectConflict(a, b) => Some(format!(
+                "Review claims `{}` and `{}`; keep both only if the contradiction is intentional evidence.",
+                a, b
+            )),
+            Violation::UnsupportedChain(id) => Some(format!(
+                "Attach supporting evidence or a foundation proposition for `{}`.",
+                id
+            )),
+        }
+    }
+
+    pub fn diagnostic(&self) -> ViolationDiagnostic {
+        ViolationDiagnostic {
+            violation: self.clone(),
+            message: self.to_string(),
+            severity: self.severity(),
+            repair_hint: self.repair_hint(),
+        }
+    }
+}
+
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -76,10 +132,18 @@ impl fmt::Display for Violation {
 pub struct VerificationResult {
     pub passed: bool,
     pub violations: Vec<Violation>,
+    #[serde(default)]
+    pub diagnostics: Vec<ViolationDiagnostic>,
     pub warnings: Vec<String>,
     pub topology_valid: bool,
     pub reference_valid: bool,
     pub conflict_free: bool,
+    #[serde(default = "default_kernel_name")]
+    pub kernel_name: String,
+    #[serde(default = "default_kernel_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub is_truth_proof: bool,
 }
 
 pub struct HybridLeanKernel;
@@ -102,11 +166,15 @@ impl HybridLeanKernel {
 
         VerificationResult {
             passed,
+            diagnostics: violations.iter().map(Violation::diagnostic).collect(),
             violations,
             warnings,
             topology_valid,
             reference_valid,
             conflict_free,
+            kernel_name: default_kernel_name(),
+            scope: default_kernel_scope(),
+            is_truth_proof: false,
         }
     }
 
@@ -263,6 +331,14 @@ impl HybridLeanKernel {
 
         (violations.is_empty(), violations)
     }
+}
+
+fn default_kernel_name() -> String {
+    "PropositionKernel".to_string()
+}
+
+fn default_kernel_scope() -> String {
+    "proposition_graph_consistency".to_string()
 }
 
 #[cfg(test)]

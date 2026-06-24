@@ -9,6 +9,7 @@ pub mod fs;
 pub mod graph;
 pub mod harness;
 pub mod ipc;
+pub mod jsonld;
 pub mod kernel;
 pub mod mdt;
 pub mod parser;

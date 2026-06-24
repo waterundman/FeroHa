@@ -2,6 +2,12 @@ export interface TaskDispatchPayload {
   content: string;
   intent: string;
   blockId?: string;
+  contextNote?: string | null;
+  scope?: string;
+  source?: string;
+  reviewMode?: "manual_bridge" | "read_only_auto_queue" | "draft_only";
+  expectedOutput?: string;
+  taskType?: string;
 }
 
 export interface TaskDispatchResult {
@@ -23,13 +29,19 @@ export interface ResearchCompletedPayload {
  */
 export async function sendTaskToAgent(
   payload: TaskDispatchPayload
-): Promise<TaskDispatchResult | undefined> {
+): Promise<TaskDispatchResult> {
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const response = await invoke<TaskDispatchResult>('dispatch_agent_task', {
       payload: {
         content: payload.content,
         intent: payload.intent,
+        task_type: payload.taskType ?? "research",
+        context_note: payload.contextNote ?? null,
+        scope: payload.scope ?? null,
+        source: payload.source ?? "editor_selection",
+        review_mode: payload.reviewMode ?? null,
+        expected_output: payload.expectedOutput ?? null,
         blockId: payload.blockId ?? null,
         timestamp: Date.now(),
       },
@@ -37,7 +49,7 @@ export async function sendTaskToAgent(
     return response;
   } catch (error) {
     console.error("Failed to dispatch to FeroHa Core:", error);
-    return undefined;
+    throw error;
   }
 }
 

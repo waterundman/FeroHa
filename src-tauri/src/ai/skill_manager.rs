@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 
 /// Skill type enumeration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +93,29 @@ impl SkillManager {
         };
         manager.register_default_skills();
         manager
+    }
+
+    fn vault_relative_path(&self, path: &str) -> Result<PathBuf, String> {
+        if path.trim().is_empty() {
+            return Err("vault-relative path is empty".to_string());
+        }
+
+        let mut safe_path = PathBuf::new();
+        for component in PathBuf::from(path).components() {
+            match component {
+                Component::Normal(part) => safe_path.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(format!("unsafe vault-relative path: {}", path));
+                }
+            }
+        }
+
+        if safe_path.as_os_str().is_empty() {
+            return Err("vault-relative path is empty".to_string());
+        }
+
+        Ok(self.vault_path.join(safe_path))
     }
 
     /// Register default skills
@@ -275,7 +298,7 @@ impl SkillManager {
         let topic = params.get("topic").ok_or("Missing topic parameter")?;
 
         // Analyze directory structure
-        let target_path = self.vault_path.join(topic);
+        let target_path = self.vault_relative_path(topic)?;
         let scan_path = if target_path.exists() {
             target_path.clone()
         } else {
@@ -477,7 +500,7 @@ Created: {date}
         let path = params.get("path").ok_or("Missing path parameter")?;
         let content = params.get("content").ok_or("Missing content parameter")?;
 
-        let full_path = self.vault_path.join(path);
+        let full_path = self.vault_relative_path(path)?;
 
         // Create parent directories if they don't exist
         if let Some(parent) = full_path.parent() {
@@ -670,6 +693,43 @@ mod tests {
 
         let written_path = vault_path.join("deep/nested/path/note.md");
         assert!(written_path.exists());
+    }
+
+    #[test]
+    fn test_execute_obsidian_markdown_rejects_path_escape() {
+        let tmp_dir = TempDir::new().unwrap();
+        let vault_path = tmp_dir.path().join("vault");
+        fs::create_dir_all(&vault_path).unwrap();
+
+        let manager = SkillManager::new(vault_path.clone(), "test-project".to_string());
+
+        let mut params = HashMap::new();
+        params.insert("path".to_string(), "../outside.md".to_string());
+        params.insert("content".to_string(), "outside".to_string());
+
+        let result = manager.execute_skill("write", params).unwrap();
+
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("unsafe vault-relative path"));
+        assert!(!tmp_dir.path().join("outside.md").exists());
+    }
+
+    #[test]
+    fn test_execute_deep_research_rejects_path_escape_topic() {
+        let tmp_dir = TempDir::new().unwrap();
+        let vault_path = tmp_dir.path().join("vault");
+        fs::create_dir_all(&vault_path).unwrap();
+        fs::create_dir_all(tmp_dir.path().join("outside")).unwrap();
+
+        let manager = SkillManager::new(vault_path, "test-project".to_string());
+
+        let mut params = HashMap::new();
+        params.insert("topic".to_string(), "../outside".to_string());
+
+        let result = manager.execute_skill("research", params).unwrap();
+
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("unsafe vault-relative path"));
     }
 
     #[test]

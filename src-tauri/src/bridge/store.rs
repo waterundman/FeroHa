@@ -1,4 +1,4 @@
-use crate::bridge::proposal::{BridgeProposal, BridgeProposalStatus};
+use crate::bridge::proposal::{BridgeProposal, BridgeProposalStatus, SourceRefKind};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -117,6 +117,29 @@ impl BridgeProposalStore {
         let updated = proposal.clone();
         self.write_all_unlocked(&proposals)?;
         Ok(updated)
+    }
+
+    pub fn update_status_by_source_ref(
+        &self,
+        kind: &SourceRefKind,
+        source_id: &str,
+        status: BridgeProposalStatus,
+        updated_at: u64,
+    ) -> Result<Option<BridgeProposal>, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut proposals = self.read_all_unlocked()?;
+        let Some(proposal) = proposals
+            .iter_mut()
+            .find(|p| &p.source_ref.kind == kind && p.source_ref.id == source_id)
+        else {
+            return Ok(None);
+        };
+
+        proposal.status = status;
+        proposal.updated_at = updated_at;
+        let updated = proposal.clone();
+        self.write_all_unlocked(&proposals)?;
+        Ok(Some(updated))
     }
 }
 
@@ -250,6 +273,48 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("Bridge proposal not found"));
+    }
+
+    #[test]
+    fn update_status_by_source_ref_updates_matching_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BridgeProposalStore::new(dir.path().join("bridge"));
+        let source = SourceRef {
+            kind: SourceRefKind::Ghost,
+            id: "ghost_1".to_string(),
+            path: Some("Target.md".to_string()),
+        };
+        store.upsert(proposal("pending", source)).unwrap();
+
+        let updated = store
+            .update_status_by_source_ref(
+                &SourceRefKind::Ghost,
+                "ghost_1",
+                BridgeProposalStatus::Applied,
+                300,
+            )
+            .unwrap()
+            .expect("matching source ref should update");
+
+        assert_eq!(updated.status, BridgeProposalStatus::Applied);
+        assert_eq!(updated.updated_at, 300);
+    }
+
+    #[test]
+    fn update_status_by_source_ref_returns_none_for_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BridgeProposalStore::new(dir.path().join("bridge"));
+
+        let updated = store
+            .update_status_by_source_ref(
+                &SourceRefKind::Ghost,
+                "ghost_missing",
+                BridgeProposalStatus::Applied,
+                300,
+            )
+            .unwrap();
+
+        assert!(updated.is_none());
     }
 
     #[test]

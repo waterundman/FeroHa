@@ -114,6 +114,27 @@ impl LinkGraph {
         );
     }
 
+    pub fn add_graph_edge(&mut self, edge: GraphEdge) {
+        self.outgoing
+            .entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
+        self.incoming
+            .entry(edge.to.clone())
+            .or_default()
+            .insert(edge.from.clone());
+        self.edge_meta.insert(
+            (edge.from, edge.to, edge.edge_type.clone()),
+            GraphEdgeMeta {
+                edge_type: edge.edge_type,
+                origin: edge.origin,
+                confidence: edge.confidence,
+                weight: edge.weight,
+                memory_region: edge.memory_region,
+            },
+        );
+    }
+
     /// Remove a link
     pub fn remove_link(&mut self, from: &str, to: &str) {
         if let Some(targets) = self.outgoing.get_mut(from) {

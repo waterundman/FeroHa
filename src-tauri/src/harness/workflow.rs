@@ -1044,6 +1044,187 @@ impl WorkflowRuntimeEventChain {
         }
     }
 
+    pub fn from_step_assessed(
+        workflow_id: impl Into<String>,
+        run_id: impl Into<String>,
+        report: &StepReport,
+        findings: &[VerificationFinding],
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let workflow_id = workflow_id.into();
+        let run_id = run_id.into();
+        let timestamp = timestamp.into();
+        let mut events = vec![HarnessEvent::new(
+            timestamp.clone(),
+            step_report_event_severity(&report.status),
+            "workflow.step_report.recorded",
+            format!(
+                "Step report {} recorded for {}.",
+                report.report_id, report.step_id
+            ),
+            serde_json::json!({
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "report_id": report.report_id,
+                "step_id": report.step_id,
+                "status": report.status,
+                "confidence": report.confidence,
+                "artifact_ids": report
+                    .artifacts
+                    .iter()
+                    .map(|artifact| artifact.artifact_id.clone())
+                    .collect::<Vec<_>>(),
+                "evidence_count": report.evidence.len(),
+            }),
+        )];
+        for finding in findings {
+            events.push(HarnessEvent::new(
+                timestamp.clone(),
+                verification_event_severity(&finding.result),
+                verification_event_name(&finding.result),
+                finding.summary.clone(),
+                serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "verification_id": finding.verification_id,
+                    "step_id": report.step_id,
+                    "level": finding.level,
+                    "target": finding.target,
+                    "result": finding.result,
+                    "failed_clauses": finding.failed_clauses,
+                    "reason_code": finding.reason_code,
+                    "evidence_refs": finding.evidence_refs,
+                    "minimal_fix_surface": finding.minimal_fix_surface,
+                }),
+            ));
+        }
+
+        Self {
+            workflow_id,
+            run_id,
+            events,
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_step_verified(
+        dispatch: &StepDispatch,
+        task_id: impl Into<String>,
+        working_artifact: &ArtifactRef,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let task_id = task_id.into();
+        Self {
+            workflow_id: dispatch.workflow_id.clone(),
+            run_id: dispatch.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.step.verified",
+                format!("Workflow step {} passed verification.", dispatch.step_id),
+                serde_json::json!({
+                    "workflow_id": dispatch.workflow_id,
+                    "run_id": dispatch.run_id,
+                    "step_id": dispatch.step_id,
+                    "attempt": dispatch.attempt,
+                    "task_id": task_id,
+                    "artifact_id": working_artifact.artifact_id,
+                    "artifact_uri": working_artifact.uri,
+                    "artifact_hash": working_artifact.hash,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_semantic_promoted(
+        workflow_id: impl Into<String>,
+        run_id: impl Into<String>,
+        step_id: impl Into<String>,
+        artifact: &ArtifactRef,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let workflow_id = workflow_id.into();
+        let run_id = run_id.into();
+        let step_id = step_id.into();
+        Self {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.semantic.promoted",
+                format!("Verified workflow knowledge was promoted from step {step_id}."),
+                serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "artifact_id": artifact.artifact_id,
+                    "artifact_uri": artifact.uri,
+                    "artifact_hash": artifact.hash,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_run_succeeded(
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        Self {
+            workflow_id: workflow.workflow_id.clone(),
+            run_id: run.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "INFO",
+                "workflow.run.succeeded",
+                format!("Workflow run {} succeeded.", run.run_id),
+                serde_json::json!({
+                    "workflow_id": workflow.workflow_id,
+                    "run_id": run.run_id,
+                    "workflow_version": workflow.version,
+                    "workflow_status": workflow.status,
+                    "run_status": run.status,
+                    "ended_at": run.ended_at,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
+    pub fn from_run_failed(
+        workflow: &WorkflowIr,
+        run: &WorkflowRunState,
+        reason_code: impl Into<String>,
+        summary: impl Into<String>,
+        timestamp: impl Into<String>,
+    ) -> Self {
+        let reason_code = reason_code.into();
+        let summary = summary.into();
+        Self {
+            workflow_id: workflow.workflow_id.clone(),
+            run_id: run.run_id.clone(),
+            events: vec![HarnessEvent::new(
+                timestamp,
+                "ERROR",
+                "workflow.run.failed",
+                summary.clone(),
+                serde_json::json!({
+                    "workflow_id": workflow.workflow_id,
+                    "run_id": run.run_id,
+                    "workflow_version": workflow.version,
+                    "workflow_status": workflow.status,
+                    "run_status": run.status,
+                    "ended_at": run.ended_at,
+                    "reason_code": reason_code,
+                }),
+            )],
+            replan_requested: false,
+        }
+    }
+
     pub fn from_step_failed(
         dispatch: &StepDispatch,
         task_id: impl Into<String>,
@@ -1637,7 +1818,7 @@ fn step_write_roots(run: &WorkflowRunState, step: &WorkflowStep) -> Vec<PathBuf>
             .cloned()
             .unwrap_or_else(|| default_worktree_path(&run.run_id, &step.step_id))],
         WorkflowStepMode::TestOnly => vec![PathBuf::from(format!(
-            ".harness/runs/{}/artifacts/{}",
+            ".dualtrack/memory/working/workflows/{}/{}",
             run.run_id, step.step_id
         ))],
         WorkflowStepMode::ReadOnly | WorkflowStepMode::ReviewOnly => Vec::new(),

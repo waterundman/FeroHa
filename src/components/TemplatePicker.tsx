@@ -15,7 +15,7 @@ interface TemplatePickerProps {
   isTauri: boolean;
 }
 
-const BLANK_TEMPLATE = { path: "", title: "Blank Note", preview: "# {{title}}" };
+const BLANK_TEMPLATE = { path: "", title: "空白笔记", preview: "# {{title}}" };
 
 function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<TemplatePickerProps, 'isOpen'>) {
   const [templates, setTemplates] = useState<TemplateMeta[]>([]);
@@ -141,8 +141,8 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.dialog} onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
         <div style={styles.header}>
-          <span style={styles.title}>New Note — Choose Template</span>
-          <button style={styles.closeBtn} onClick={onClose} title="Close (Esc)">
+          <span style={styles.title}>新建笔记 - 选择模板</span>
+          <button style={styles.closeBtn} onClick={onClose} title="关闭（Esc）">
             <FeroHaIcon name="X" size={16} />
           </button>
         </div>
@@ -163,7 +163,7 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
                   <FeroHaIcon name={idx === 0 ? "FileText" : "FilePen"} size={14} /> {tmpl.title}
                 </span>
                 <span style={styles.itemPreview}>
-                  {idx === 0 ? "Default blank note with title" : tmpl.preview.slice(0, 200)}
+                  {idx === 0 ? "默认空白笔记，包含标题" : tmpl.preview.slice(0, 200)}
                 </span>
               </div>
             ))}
@@ -172,7 +172,7 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
           <div style={styles.inputs}>
             {needsTitleInput && (
               <div style={styles.field}>
-                <label style={styles.label}>Title</label>
+                <label style={styles.label}>标题</label>
                 <input
                   ref={titleRef}
                   style={styles.input}
@@ -184,13 +184,13 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
                       handleConfirm();
                     }
                   }}
-                  placeholder="Enter note title"
+                  placeholder="输入笔记标题"
                 />
               </div>
             )}
             {needsTagsInput && (
               <div style={styles.field}>
-                <label style={styles.label}>Tags (comma-separated)</label>
+                <label style={styles.label}>标签（用逗号分隔）</label>
                 <input
                   ref={tagsRef}
                   style={styles.input}
@@ -208,7 +208,7 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
             )}
             {needsFileInput && (
               <div style={styles.field}>
-                <label style={styles.label}>File name</label>
+                <label style={styles.label}>文件名</label>
                 <input
                   ref={fileRef}
                   style={styles.input}
@@ -229,17 +229,17 @@ function TemplatePickerInner({ onClose, onSelectTemplate, isTauri }: Omit<Templa
 
         <div style={styles.footer}>
           <div style={styles.preview}>
-            <span style={styles.previewLabel}>Preview:</span>
+            <span style={styles.previewLabel}>预览：</span>
             <pre style={styles.previewContent}>
               {loadedContent.slice(0, 300)}
             </pre>
           </div>
           <div style={styles.actions}>
             <button style={styles.cancelBtn} onClick={onClose}>
-              Cancel
+              取消
             </button>
             <button style={styles.confirmBtn} onClick={handleConfirm}>
-              Create Note
+              创建笔记
             </button>
           </div>
         </div>

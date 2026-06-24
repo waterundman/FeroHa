@@ -3,12 +3,20 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { OrchestratorStatus } from "../types/orchestrator";
+import type {
+  HarnessEvent,
+  OrchestratorOutput,
+  OrchestratorStatus,
+  WorkflowPatch,
+  WorkflowRuntimeBundle,
+} from "../types/orchestrator";
 import type { ToolInfo } from "../types/command-card";
 import type { BridgeProposal, BridgeProposalActionResult } from "../types/bridge-proposal";
+import type { MockSimulationRun } from "../lib/mockSimulationSuite";
 
 export type ActivePanel =
   | "editor"
+  | "task-intake"
   | "graph"
   | "diff"
   | "tasks"
@@ -16,10 +24,14 @@ export type ActivePanel =
   | "pipeline"
   | "plugins"
   | "inspiration"
-  | "bridge";
+  | "bridge"
+  | "settings";
+
+export type AppMode = "human" | "ai";
 
 const activePanels: ActivePanel[] = [
   "editor",
+  "task-intake",
   "graph",
   "diff",
   "tasks",
@@ -28,10 +40,100 @@ const activePanels: ActivePanel[] = [
   "plugins",
   "inspiration",
   "bridge",
+  "settings",
 ];
 
 function isActivePanel(panel: unknown): panel is ActivePanel {
   return typeof panel === "string" && activePanels.includes(panel as ActivePanel);
+}
+
+const aiPanels = new Set<ActivePanel>([
+  "editor",
+  "graph",
+  "tasks",
+  "cards",
+  "pipeline",
+  "plugins",
+  "settings",
+]);
+
+const humanPanels = new Set<ActivePanel>([
+  "editor",
+  "task-intake",
+  "inspiration",
+  "bridge",
+  "diff",
+  "settings",
+]);
+
+export function modeForPanel(panel: ActivePanel, currentMode: AppMode): AppMode {
+  if (panel === "settings" || panel === "editor") return currentMode;
+  if (humanPanels.has(panel)) return "human";
+  return "ai";
+}
+
+export function resolveActivePanelForMode(panel: ActivePanel, mode: AppMode): ActivePanel {
+  if (mode === "ai") return aiPanels.has(panel) ? panel : "graph";
+  return humanPanels.has(panel) ? panel : "inspiration";
+}
+
+function navigationUpdateFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+  currentMode: AppMode,
+): { mode: AppMode; activePanel: ActivePanel } | null {
+  if (!metadata?.effect || metadata.effect !== "navigate" || !isActivePanel(metadata.target_panel)) {
+    return null;
+  }
+  const targetPanel = metadata.target_panel;
+  const targetMode = modeForPanel(targetPanel, currentMode);
+  return {
+    mode: targetMode,
+    activePanel: resolveActivePanelForMode(targetPanel, targetMode),
+  };
+}
+
+function payloadString(payload: Record<string, unknown> | undefined, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function localBridgeNavigationResult(
+  proposal: BridgeProposal | undefined,
+  actionId: string,
+  message: string,
+): BridgeProposalActionResult | null {
+  const action = proposal?.actions.find((candidate) => candidate.id === actionId);
+  if (!proposal || !action) {
+    return null;
+  }
+
+  if (action.kind === "open_diff") {
+    return {
+      status: "navigate",
+      message,
+      proposal,
+      metadata: {
+        effect: "navigate",
+        target_panel: "diff",
+        target_id: payloadString(action.payload, "ghost_id") ?? proposal.source_ref.id,
+      },
+    };
+  }
+
+  if (action.kind === "open_trace") {
+    return {
+      status: "navigate",
+      message,
+      proposal,
+      metadata: {
+        effect: "navigate",
+        target_panel: "tasks",
+        target_id: payloadString(action.payload, "task_id") ?? proposal.source_ref.id,
+      },
+    };
+  }
+
+  return null;
 }
 
 export interface NoteMeta {
@@ -52,12 +154,15 @@ export interface TaskStatus {
   has_trace?: boolean;
 }
 
+export type MemoryZone = "working" | "semantic" | "long_term";
+
 export interface GraphNode {
   id: string;
   title: string;
   outgoing: number;
   incoming: number;
   activation?: number;
+  memory_zone?: MemoryZone;
 }
 
 export type GraphEdgeType =
@@ -152,6 +257,7 @@ interface AppStore {
   addTask: (task: TaskStatus) => void;
   updateTask: (id: string, updates: Partial<TaskStatus>) => void;
   clearCompletedTasks: () => void;
+  applyMockSimulationRun: (run: MockSimulationRun) => void;
 
   // Diff state
   diffBlocks: DiffBlock[];
@@ -191,6 +297,26 @@ interface AppStore {
   // Orchestrator state
   orchestratorStatus: OrchestratorStatus | null;
   fetchOrchestratorStatus: () => Promise<void>;
+  workflowRuntimeEvents: HarnessEvent[];
+  workflowRuntimeEventRunId: string | null;
+  workflowRuntimeEventError: string | null;
+  fetchWorkflowRuntimeEvents: (runId: string, limit?: number) => Promise<HarnessEvent[]>;
+  workflowRuns: WorkflowRuntimeBundle[];
+  activeWorkflowRun: WorkflowRuntimeBundle | null;
+  workflowRunLoading: boolean;
+  workflowRunError: string | null;
+  createAndStartWorkflow: (
+    goalText: string,
+    acceptanceCriteria: string[],
+  ) => Promise<WorkflowRuntimeBundle | null>;
+  fetchWorkflowRuns: () => Promise<WorkflowRuntimeBundle[]>;
+  fetchWorkflowRun: (runId: string) => Promise<WorkflowRuntimeBundle | null>;
+  applyWorkflowRunUpdate: (bundle: WorkflowRuntimeBundle) => void;
+  submitWorkflowPatchReview: (runId: string, patch: WorkflowPatch) => Promise<BridgeProposal | null>;
+  submitOrchestratorOutputReview: (
+    runId: string,
+    output: OrchestratorOutput,
+  ) => Promise<BridgeProposal | null>;
   terminateAgent: (agentId: string) => Promise<boolean>;
   reinstateAgent: (agentId: string) => Promise<boolean>;
 
@@ -210,8 +336,8 @@ interface AppStore {
   setActivePanel: (panel: ActivePanel) => void;
   isCliActive: boolean;
   setCliActive: (active: boolean) => void;
-  mode: "human" | "ai";
-  setMode: (mode: "human" | "ai") => void;
+  mode: AppMode;
+  setMode: (mode: AppMode) => void;
 
   // Navigation history
   _isNavigatingHistory: boolean;
@@ -225,6 +351,17 @@ interface AppStore {
 
 function getTitleFromPath(path: string): string {
   return path.split('/').pop()?.replace(/\.md$/, '') || path;
+}
+
+function sortWorkflowRuns(runs: WorkflowRuntimeBundle[]): WorkflowRuntimeBundle[] {
+  return [...runs].sort((left, right) => {
+    const leftNumeric = Number(left.updated_at);
+    const rightNumeric = Number(right.updated_at);
+    if (Number.isFinite(leftNumeric) && Number.isFinite(rightNumeric)) {
+      return rightNumeric - leftNumeric;
+    }
+    return right.updated_at.localeCompare(left.updated_at);
+  });
 }
 
 export const useAppStore = create<AppStore>()(
@@ -250,7 +387,20 @@ export const useAppStore = create<AppStore>()(
       splitDirection: 'horizontal',
       splitTabIndex: -1,
 
-      setVaultPath: (path) => set({ vaultPath: path, navigationStack: [], navigationIndex: -1, hasBack: false, hasForward: false, favorites: [], tabs: [], activeTabIndex: -1, splitActive: false }),
+      setVaultPath: (path) => set({
+        vaultPath: path,
+        navigationStack: [],
+        navigationIndex: -1,
+        hasBack: false,
+        hasForward: false,
+        favorites: [],
+        tabs: [],
+        activeTabIndex: -1,
+        splitActive: false,
+        workflowRuns: [],
+        activeWorkflowRun: null,
+        workflowRunError: null,
+      }),
       setNotes: (notes) => set({ notes }),
       openNote: (path, content) => {
         const state = get();
@@ -361,7 +511,15 @@ export const useAppStore = create<AppStore>()(
         const newClosed = [closedTab, ...state.closedTabs].slice(0, 10);
         const newTabs = tabs.filter((_, i) => i !== index);
         if (newTabs.length === 0) {
-          set({ tabs: [], activeTabIndex: -1, closedTabs: newClosed, currentNote: null, isDirty: false, splitActive: false });
+          set({
+            tabs: [],
+            activeTabIndex: -1,
+            closedTabs: newClosed,
+            currentNote: null,
+            isDirty: false,
+            splitActive: false,
+            splitTabIndex: -1,
+          });
           return;
         }
         let newIndex = state.activeTabIndex;
@@ -375,6 +533,7 @@ export const useAppStore = create<AppStore>()(
           currentNote: { path: activeTab.path, content: activeTab.content },
           isDirty: activeTab.isDirty,
           splitActive: false,
+          splitTabIndex: -1,
         });
       },
       switchTab: (index) => {
@@ -505,6 +664,30 @@ export const useAppStore = create<AppStore>()(
             (t) => t.status !== "done" && t.status !== "error" && t.status !== "cancelled"
           ),
         })),
+      applyMockSimulationRun: (run) =>
+        set((state) => ({
+          tasks: [
+            ...state.tasks.filter((task) => task.id !== run.task.id),
+            run.task,
+          ],
+          diffBlocks: [
+            ...state.diffBlocks.filter(
+              (block) =>
+                block.ghostId !== run.task.id &&
+                !run.diffBlocks.some((incoming) => incoming.id === block.id),
+            ),
+            ...run.diffBlocks,
+          ],
+          orchestratorStatus: run.orchestratorStatus,
+          bridgeProposals: [
+            run.bridgeProposal,
+            ...state.bridgeProposals.filter(
+              (proposal) => proposal.id !== run.bridgeProposal.id,
+            ),
+          ],
+          mode: "ai",
+          activePanel: "tasks",
+        })),
 
       // Diff state
       diffBlocks: [],
@@ -544,6 +727,13 @@ export const useAppStore = create<AppStore>()(
 
       // Orchestrator state
       orchestratorStatus: null,
+      workflowRuntimeEvents: [],
+      workflowRuntimeEventRunId: null,
+      workflowRuntimeEventError: null,
+      workflowRuns: [],
+      activeWorkflowRun: null,
+      workflowRunLoading: false,
+      workflowRunError: null,
 
       fetchOrchestratorStatus: async () => {
         try {
@@ -552,6 +742,155 @@ export const useAppStore = create<AppStore>()(
           set({ orchestratorStatus: status });
         } catch {
           // Tauri not available or command failed
+        }
+      },
+
+      fetchWorkflowRuntimeEvents: async (runId: string, limit = 200) => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const events = await invoke<HarnessEvent[]>("read_workflow_runtime_events", {
+            runId,
+            limit,
+          });
+          set({
+            workflowRuntimeEvents: events,
+            workflowRuntimeEventRunId: runId,
+            workflowRuntimeEventError: null,
+          });
+          return events;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          set({
+            workflowRuntimeEvents: [],
+            workflowRuntimeEventRunId: runId,
+            workflowRuntimeEventError: message,
+          });
+          return [];
+        }
+      },
+
+      applyWorkflowRunUpdate: (bundle) =>
+        set((state) => ({
+          workflowRuns: sortWorkflowRuns([
+            bundle,
+            ...state.workflowRuns.filter(
+              (existing) => existing.run.run_id !== bundle.run.run_id,
+            ),
+          ]),
+          activeWorkflowRun: bundle,
+          workflowRunError: null,
+        })),
+
+      createAndStartWorkflow: async (goalText, acceptanceCriteria) => {
+        set({ workflowRunLoading: true, workflowRunError: null });
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const bundle = await invoke<WorkflowRuntimeBundle>("create_and_start_workflow", {
+            goalText,
+            acceptanceCriteria,
+          });
+          get().applyWorkflowRunUpdate(bundle);
+          set({ workflowRunLoading: false });
+          return bundle;
+        } catch (error) {
+          set({
+            workflowRunLoading: false,
+            workflowRunError: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      },
+
+      fetchWorkflowRuns: async () => {
+        set({ workflowRunLoading: true, workflowRunError: null });
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const runs = sortWorkflowRuns(
+            await invoke<WorkflowRuntimeBundle[]>("list_workflow_runs"),
+          );
+          set({
+            workflowRuns: runs,
+            activeWorkflowRun: runs[0] ?? null,
+            workflowRunLoading: false,
+          });
+          return runs;
+        } catch (error) {
+          set({
+            workflowRuns: [],
+            activeWorkflowRun: null,
+            workflowRunLoading: false,
+            workflowRunError: error instanceof Error ? error.message : String(error),
+          });
+          return [];
+        }
+      },
+
+      fetchWorkflowRun: async (runId) => {
+        set({ workflowRunLoading: true, workflowRunError: null });
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const bundle = await invoke<WorkflowRuntimeBundle>("get_workflow_run", {
+            runId,
+          });
+          get().applyWorkflowRunUpdate(bundle);
+          set({ workflowRunLoading: false });
+          return bundle;
+        } catch (error) {
+          set({
+            workflowRunLoading: false,
+            workflowRunError: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      },
+
+      submitWorkflowPatchReview: async (runId: string, patch: WorkflowPatch) => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const proposal = await invoke<BridgeProposal>("submit_workflow_patch_review", {
+            runId,
+            patch,
+          });
+          set((state) => ({
+            bridgeProposals: [
+              proposal,
+              ...state.bridgeProposals.filter((item) => item.id !== proposal.id),
+            ],
+            bridgeError: null,
+          }));
+          return proposal;
+        } catch (error) {
+          set({ bridgeError: error instanceof Error ? error.message : String(error) });
+          return null;
+        }
+      },
+
+      submitOrchestratorOutputReview: async (
+        runId: string,
+        output: OrchestratorOutput,
+      ) => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const proposal = await invoke<BridgeProposal | null>(
+            "submit_orchestrator_output_review",
+            {
+              runId,
+              output,
+            },
+          );
+          if (proposal) {
+            set((state) => ({
+              bridgeProposals: [
+                proposal,
+                ...state.bridgeProposals.filter((item) => item.id !== proposal.id),
+              ],
+              bridgeError: null,
+            }));
+          }
+          return proposal;
+        } catch (error) {
+          set({ bridgeError: error instanceof Error ? error.message : String(error) });
+          return null;
         }
       },
 
@@ -609,27 +948,45 @@ export const useAppStore = create<AppStore>()(
             id: proposalId,
             actionId,
           });
-          if (
-            result.metadata?.effect === "navigate" &&
-            isActivePanel(result.metadata.target_panel)
-          ) {
-            set({ activePanel: result.metadata.target_panel });
+          const navigationUpdate = navigationUpdateFromMetadata(result.metadata, get().mode);
+          if (navigationUpdate) {
+            set(navigationUpdate);
           }
           await get().fetchBridgeProposals();
           return result;
         } catch (error) {
-          set({ bridgeError: error instanceof Error ? error.message : String(error) });
+          const message = error instanceof Error ? error.message : String(error);
+          const fallbackResult = localBridgeNavigationResult(
+            get().bridgeProposals.find((proposal) => proposal.id === proposalId),
+            actionId,
+            message,
+          );
+          const navigationUpdate = navigationUpdateFromMetadata(fallbackResult?.metadata, get().mode);
+          if (fallbackResult && navigationUpdate) {
+            set({ bridgeError: message, ...navigationUpdate });
+            return fallbackResult;
+          }
+          set({ bridgeError: message });
           return null;
         }
       },
 
       // UI state
       activePanel: "editor",
-      setActivePanel: (panel) => set({ activePanel: panel }),
+      setActivePanel: (panel) => set((state) => {
+        const mode = modeForPanel(panel, state.mode);
+        return {
+          mode,
+          activePanel: resolveActivePanelForMode(panel, mode),
+        };
+      }),
       isCliActive: false,
       setCliActive: (active) => set({ isCliActive: active }),
       mode: "ai",
-      setMode: (mode) => set({ mode, activePanel: mode === "human" ? "inspiration" : "graph" }),
+      setMode: (mode) => set((state) => ({
+        mode,
+        activePanel: resolveActivePanelForMode(state.activePanel, mode),
+      })),
 
       // Navigation history
       _isNavigatingHistory: false,

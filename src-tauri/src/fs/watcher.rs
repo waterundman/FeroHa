@@ -61,17 +61,14 @@ impl FileWatcher {
                     };
 
                     for path in &event.paths {
-                        if let Some(ext) = path.extension() {
-                            if ext != "md" {
-                                continue;
-                            }
-                        }
-
                         let relative = path
                             .strip_prefix(&watch_path)
                             .unwrap_or(path)
                             .to_string_lossy()
                             .to_string();
+                        if !is_content_markdown_path(&relative) {
+                            continue;
+                        }
 
                         let event = FileEvent {
                             path: relative,
@@ -129,5 +126,85 @@ impl Drop for FileWatcher {
     fn drop(&mut self) {
         // Unwatch the path to clean up resources
         let _ = self.watcher.unwatch(&self.vault_path);
+    }
+}
+
+pub(crate) fn is_content_markdown_path(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        return false;
+    }
+
+    let mut has_component = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                has_component = true;
+                let name = part.to_string_lossy();
+                if name.starts_with('.') || name.starts_with('_') {
+                    return false;
+                }
+            }
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+
+    has_component && path.extension().map(|ext| ext == "md").unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_content_markdown_path, FileEventKind, FileWatcher};
+    use std::time::Duration;
+
+    #[test]
+    fn content_markdown_path_filter_excludes_internal_and_unsafe_paths() {
+        assert!(is_content_markdown_path("notes/source.md"));
+        assert!(!is_content_markdown_path(".dualtrack/research/result.md"));
+        assert!(!is_content_markdown_path("notes/.hidden.md"));
+        assert!(!is_content_markdown_path("_templates/source.md"));
+        assert!(!is_content_markdown_path("notes/image.png"));
+        assert!(!is_content_markdown_path("../outside.md"));
+    }
+
+    #[test]
+    fn file_watcher_emits_content_markdown_events_and_skips_internal_paths() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let watcher = FileWatcher::watch(dir.path()).unwrap();
+            let mut rx = watcher.subscribe();
+
+            let internal_dir = dir.path().join(".dualtrack").join("research");
+            std::fs::create_dir_all(&internal_dir).unwrap();
+            std::fs::write(internal_dir.join("result.md"), "# Internal\n").unwrap();
+            assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv())
+                .await
+                .is_err());
+
+            let notes_dir = dir.path().join("notes");
+            std::fs::create_dir_all(&notes_dir).unwrap();
+            std::fs::write(notes_dir.join("source.md"), "# Source\n").unwrap();
+
+            let event = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = rx.recv().await.unwrap();
+                    if event.path.replace('\\', "/") == "notes/source.md" {
+                        break event;
+                    }
+                }
+            })
+            .await
+            .expect("watcher did not emit notes/source.md event");
+
+            assert_eq!(event.path.replace('\\', "/"), "notes/source.md");
+            assert!(matches!(
+                event.kind,
+                FileEventKind::Created | FileEventKind::Modified
+            ));
+
+            drop(watcher);
+        });
     }
 }

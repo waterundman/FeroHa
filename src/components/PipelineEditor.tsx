@@ -23,12 +23,12 @@ const PORT_OFFSET_Y_IN = -4;
 const PORT_OFFSET_Y_OUT = 4;
 const PORT_RADIUS = 5;
 const CATEGORY_LABELS: Record<CommandCategory | string, string> = {
-  content: "Content",
-  analysis: "Analysis",
-  format: "Format",
-  system: "System",
+  content: "内容",
+  analysis: "分析",
+  format: "格式",
+  system: "系统",
   agent: "Agent",
-  all: "All",
+  all: "全部",
 };
 
 const CATEGORY_ICONS: Record<CommandCategory | string, string> = {
@@ -45,8 +45,22 @@ function loadPipeline(pipelineId?: string): PipelineDefinition {
     const existing = pipelineManager.get(pipelineId);
     if (existing) return existing;
   }
-  return pipelineManager.create("New Pipeline", "A new command card pipeline");
+  return pipelineManager.create("新流程", "新的指令卡流程");
 }
+
+const EXEC_STATUS_LABELS: Record<NodeExecStatus, string> = {
+  idle: "空闲",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+};
+
+const PIPELINE_STATUS_LABELS: Record<NodeExecStatus, string> = {
+  idle: "就绪",
+  running: "运行中...",
+  completed: "完成",
+  failed: "失败",
+};
 
 function getDefaultParams(card?: CommandCardDefinition): Record<string, unknown> | undefined {
   if (!card) return undefined;
@@ -517,18 +531,18 @@ export default function PipelineEditor({
             className="pipeline-toolbar-btn run-btn"
             onClick={handleRun}
             disabled={execStatus === "running"}
-            title="Run pipeline"
+            title="运行流程"
           >
             <FeroHaIcon name="Play" size={14} />
-            Run
+            运行
           </button>
           <button
             className="pipeline-toolbar-btn"
             onClick={() => onSave?.(pipeline)}
-            title="Save pipeline"
+            title="保存流程"
           >
             <FeroHaIcon name="Save" size={14} />
-            Save
+            保存
           </button>
         </div>
 
@@ -537,7 +551,7 @@ export default function PipelineEditor({
             className="pipeline-toolbar-btn"
             onClick={handleUndo}
             disabled={undoStack.length === 0}
-            title="Undo"
+            title="撤销"
           >
             <FeroHaIcon name="Undo" size={14} />
           </button>
@@ -545,7 +559,7 @@ export default function PipelineEditor({
             className="pipeline-toolbar-btn"
             onClick={handleRedo}
             disabled={redoStack.length === 0}
-            title="Redo"
+            title="重做"
           >
             <FeroHaIcon name="Redo" size={14} />
           </button>
@@ -565,7 +579,7 @@ export default function PipelineEditor({
           {execStatus !== "idle" && (
             <>
               <span className={`pipeline-run-status ${execStatus}`}>
-                {execStatus.toUpperCase()}
+                {EXEC_STATUS_LABELS[execStatus]}
               </span>
               <div className="pipeline-progress-bar">
                 <div
@@ -578,27 +592,27 @@ export default function PipelineEditor({
           <button
             className="pipeline-toolbar-btn"
             onClick={handleExport}
-            title="Export JSON"
+            title="导出 JSON"
           >
             <FeroHaIcon name="Download" size={14} />
-            Export
+            导出
           </button>
           <button
             className="pipeline-toolbar-btn"
             onClick={handleImport}
-            title="Import JSON"
+            title="导入 JSON"
           >
             <FeroHaIcon name="Upload" size={14} />
-            Import
+            导入
           </button>
           {selectedNode && (
             <button
               className="pipeline-toolbar-btn danger-btn"
               onClick={() => removeNode(selectedNode.id)}
-              title="Delete selected node"
+              title="删除选中节点"
             >
               <FeroHaIcon name="Trash2" size={14} />
-              Delete
+              删除
             </button>
           )}
         </div>
@@ -611,10 +625,10 @@ export default function PipelineEditor({
           <div style={{ padding: "8px" }}>
             <input
               type="text"
-              placeholder="Search cards..."
+              placeholder="搜索指令卡..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pipeline-property-row input"
+              className="pipeline-card-search-input feroha-search"
               style={{ width: "100%", margin: 0 }}
             />
           </div>
@@ -751,7 +765,7 @@ export default function PipelineEditor({
                       r={PORT_RADIUS}
                       data-port-node-id={node.id}
                     >
-                      <title>Input port</title>
+                      <title>输入端口</title>
                     </circle>
                     <circle
                       className="port-circle"
@@ -761,7 +775,7 @@ export default function PipelineEditor({
                       onMouseDown={(e) => handlePortMouseDown(e, node.id)}
                       data-port-node-id={node.id}
                     >
-                      <title>Output port - drag to connect</title>
+                      <title>输出端口，拖动以连接</title>
                     </circle>
                   </g>
                 );
@@ -812,14 +826,14 @@ export default function PipelineEditor({
                     />
                     <span className="pipeline-node-title">
                       {node.type === "start"
-                        ? "Start"
+                        ? "开始"
                         : node.type === "end"
-                        ? "End"
+                        ? "结束"
                         : node.type === "condition"
-                        ? "Condition"
+                        ? "条件"
                         : node.type === "parallel"
-                        ? "Parallel"
-                        : node.card?.meta.name || "Command"}
+                        ? "并行"
+                        : node.card?.meta.name || "指令"}
                     </span>
                   </div>
                   {node.type === "command" && node.card && (
@@ -829,7 +843,7 @@ export default function PipelineEditor({
                   )}
                   {node.type === "condition" && (
                     <div className="pipeline-node-body">
-                      <p>{node.condition || "No condition set"}</p>
+                      <p>{node.condition || "未设置条件"}</p>
                     </div>
                   )}
                   {(execState === "completed" || execState === "failed") && (
@@ -851,7 +865,7 @@ export default function PipelineEditor({
           <div className="pipeline-properties-panel">
             <div className="pipeline-properties-header">
               <span>
-                {selectedNode ? "Node Properties" : "Edge Properties"}
+                {selectedNode ? "节点属性" : "连线属性"}
               </span>
               <button
                 className="pipeline-properties-close"
@@ -867,9 +881,9 @@ export default function PipelineEditor({
             {selectedNode && (
               <>
                 <div className="pipeline-property-section">
-                  <div className="pipeline-property-label">Basic</div>
+                  <div className="pipeline-property-label">基础</div>
                   <div className="pipeline-property-row">
-                    <label>Type</label>
+                    <label>类型</label>
                     <span style={{ fontSize: 12, color: "var(--text-primary)" }}>
                       {selectedNode.type}
                     </span>
@@ -877,7 +891,7 @@ export default function PipelineEditor({
                   {selectedNode.card && (
                     <>
                       <div className="pipeline-property-row">
-                        <label>Card</label>
+                        <label>指令卡</label>
                         <span
                           style={{ fontSize: 12, color: "var(--text-primary)" }}
                         >
@@ -885,7 +899,7 @@ export default function PipelineEditor({
                         </span>
                       </div>
                       <div className="pipeline-property-row">
-                        <label>Description</label>
+                        <label>说明</label>
                         <p
                           style={{
                             fontSize: 11,
@@ -900,7 +914,7 @@ export default function PipelineEditor({
                   )}
                   {selectedNode.type === "condition" && (
                     <div className="pipeline-property-row">
-                      <label>Condition</label>
+                      <label>条件</label>
                       <input
                         type="text"
                         value={selectedNode.condition || ""}
@@ -923,7 +937,7 @@ export default function PipelineEditor({
                   selectedNode.card && (
                     <div className="pipeline-property-section">
                       <div className="pipeline-property-label">
-                        Parameters
+                        参数
                       </div>
                       {selectedNode.card.params.map((param) => (
                         <div
@@ -1017,13 +1031,13 @@ export default function PipelineEditor({
             {selectedEdge && (
               <div className="pipeline-edge-info">
                 <span>
-                  Source:{" "}
+                  来源：{" "}
                   {pipeline.nodes.find((n) => n.id === selectedEdge.source)
                     ?.card?.meta.name || selectedEdge.source}
                 </span>
                 <br />
                 <span>
-                  Target:{" "}
+                  目标：{" "}
                   {pipeline.nodes.find((n) => n.id === selectedEdge.target)
                     ?.card?.meta.name || selectedEdge.target}
                 </span>
@@ -1034,7 +1048,7 @@ export default function PipelineEditor({
                     style={{ fontSize: 11 }}
                   >
                     <FeroHaIcon name="Trash2" size={12} />
-                    Delete Edge
+                    删除连线
                   </button>
                 </div>
               </div>
@@ -1058,7 +1072,7 @@ export default function PipelineEditor({
                 }}
               >
                 <h4>
-                  Edit:{" "}
+                  编辑：{" "}
                   {
                     pipeline.nodes.find((n) => n.id === paramsEditingNodeId)!
                       .card!.meta.name
@@ -1130,7 +1144,7 @@ export default function PipelineEditor({
                     className="btn-cancel"
                     onClick={() => setParamsEditingNodeId(null)}
                   >
-                    Close
+                    关闭
                   </button>
                 </div>
               </div>
@@ -1165,7 +1179,7 @@ export default function PipelineEditor({
                 }}
               >
                 <FeroHaIcon name="Settings" size={12} />
-                Edit Parameters
+                编辑参数
               </div>
               <div className="pipeline-context-menu-divider" />
               <div
@@ -1176,7 +1190,7 @@ export default function PipelineEditor({
                 }}
               >
                 <FeroHaIcon name="Trash2" size={12} />
-                Delete Node
+                删除节点
               </div>
             </>
           )}
@@ -1189,7 +1203,7 @@ export default function PipelineEditor({
               }}
             >
               <FeroHaIcon name="Trash2" size={12} />
-              Delete Edge
+              删除连线
             </div>
           )}
           {!contextMenu.nodeId && !contextMenu.edgeId && (
@@ -1197,7 +1211,7 @@ export default function PipelineEditor({
               className="pipeline-context-menu-item"
               onClick={() => setContextMenu(null)}
             >
-              No action available
+              暂无可用操作
             </div>
           )}
         </div>
@@ -1207,20 +1221,20 @@ export default function PipelineEditor({
       <div className="pipeline-status-bar">
         <span className="status-item">
           <span className="status-dot" />
-          Nodes: {pipeline.nodes.length}
+          节点：{pipeline.nodes.length}
         </span>
         <span className="status-item">
           <span
             className={`status-dot ${pipeline.edges.length > 0 ? "connected" : ""}`}
           />
-          Edges: {pipeline.edges.length}
+          连线：{pipeline.edges.length}
         </span>
         <span className="status-item">
-          Status: {execStatus === "running" ? "Running..." : execStatus === "completed" ? "Done" : execStatus === "failed" ? "Failed" : "Ready"}
+          状态：{PIPELINE_STATUS_LABELS[execStatus]}
         </span>
         {execStatus === "running" && (
           <span className="status-item">
-            Progress: {execProgress}%
+            进度：{execProgress}%
           </span>
         )}
       </div>

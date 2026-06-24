@@ -3,6 +3,7 @@
 // v2.8: Community persistence to SQLite + dream run logs
 
 use super::vectordb::{ChunkRecord, CommunityRecord, VectorStore};
+use crate::graph::link_graph::{GraphEdge, GraphEdgeType};
 use crate::harness::regression::DreamAuditSnapshot;
 use chrono::Local;
 use rand::seq::SliceRandom;
@@ -699,11 +700,55 @@ impl DreamEngine {
     pub fn connection_count(&self) -> usize {
         self.connections.values().map(|c| c.len()).sum()
     }
+
+    pub fn export_graph_edges(&self) -> Vec<GraphEdge> {
+        let mut edges: Vec<GraphEdge> = self
+            .connections
+            .values()
+            .flat_map(|connections| connections.iter())
+            .map(|connection| GraphEdge {
+                from: connection.from_id.clone(),
+                to: connection.to_id.clone(),
+                edge_type: dream_edge_type(&connection.connection_type),
+                origin: "dream".to_string(),
+                confidence: connection.weight.clamp(0.0, 1.0),
+                weight: Some(connection.weight),
+                memory_region: Some(dream_memory_region(&connection.connection_type).to_string()),
+            })
+            .collect();
+        edges.sort_by(|left, right| {
+            left.from
+                .cmp(&right.from)
+                .then_with(|| left.to.cmp(&right.to))
+                .then_with(|| {
+                    format!("{:?}", left.edge_type).cmp(&format!("{:?}", right.edge_type))
+                })
+        });
+        edges
+    }
 }
 
 pub struct CommunitySummary {
     text: String,
     confidence: f32,
+}
+
+fn dream_edge_type(connection_type: &ConnectionType) -> GraphEdgeType {
+    match connection_type {
+        ConnectionType::Semantic => GraphEdgeType::Semantic,
+        ConnectionType::Temporal => GraphEdgeType::Temporal,
+        ConnectionType::Reference => GraphEdgeType::Reference,
+        ConnectionType::Bridge => GraphEdgeType::Bridge,
+    }
+}
+
+fn dream_memory_region(connection_type: &ConnectionType) -> &'static str {
+    match connection_type {
+        ConnectionType::Semantic => "semantic",
+        ConnectionType::Temporal => "working",
+        ConnectionType::Reference => "long_term",
+        ConnectionType::Bridge => "dream_bridge",
+    }
 }
 
 fn current_timestamp() -> u64 {
@@ -991,5 +1036,59 @@ mod tests {
         assert!(snapshot.community_coverage > 0.66);
         assert!(snapshot.salience_shift > 0.7);
         assert!(snapshot.contradiction_risk >= 0.92);
+    }
+
+    #[test]
+    fn test_export_graph_edges_maps_dream_connection_types() {
+        let mut engine = DreamEngine::new();
+        engine.connections.insert(
+            "chunk_a".to_string(),
+            vec![
+                Connection {
+                    from_id: "chunk_a".to_string(),
+                    to_id: "chunk_b".to_string(),
+                    weight: 0.7,
+                    connection_type: ConnectionType::Semantic,
+                    created_at: 0,
+                    last_activated: 0,
+                },
+                Connection {
+                    from_id: "chunk_a".to_string(),
+                    to_id: "chunk_c".to_string(),
+                    weight: 0.4,
+                    connection_type: ConnectionType::Bridge,
+                    created_at: 0,
+                    last_activated: 0,
+                },
+                Connection {
+                    from_id: "chunk_a".to_string(),
+                    to_id: "chunk_d".to_string(),
+                    weight: 0.5,
+                    connection_type: ConnectionType::Temporal,
+                    created_at: 0,
+                    last_activated: 0,
+                },
+            ],
+        );
+
+        let edges = engine.export_graph_edges();
+
+        assert_eq!(edges.len(), 3);
+        assert!(edges.iter().any(|edge| {
+            edge.to == "chunk_b"
+                && edge.edge_type == crate::graph::link_graph::GraphEdgeType::Semantic
+                && edge.origin == "dream"
+                && edge.memory_region.as_deref() == Some("semantic")
+        }));
+        assert!(edges.iter().any(|edge| {
+            edge.to == "chunk_c"
+                && edge.edge_type == crate::graph::link_graph::GraphEdgeType::Bridge
+                && edge.memory_region.as_deref() == Some("dream_bridge")
+        }));
+        assert!(edges.iter().any(|edge| {
+            edge.to == "chunk_d"
+                && edge.edge_type == crate::graph::link_graph::GraphEdgeType::Temporal
+                && edge.memory_region.as_deref() == Some("working")
+        }));
     }
 }

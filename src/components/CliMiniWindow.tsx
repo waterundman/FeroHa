@@ -11,6 +11,7 @@ interface CliOutputLine {
 
 interface CliMiniWindowProps {
   vaultPath: string;
+  isTauri: boolean;
 }
 
 const CLS_KEY = "feroha-cli-history";
@@ -65,7 +66,7 @@ function useLocalStore<T>(key: string, fallback: T): [T, (v: T | ((prev: T) => T
   return [value, setValue];
 }
 
-export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowProps) {
+export default function CliMiniWindow({ vaultPath: _vaultPath, isTauri }: CliMiniWindowProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [output, setOutput] = useState<CliOutputLine[]>([]);
@@ -209,6 +210,19 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
     const updatedHistory = [...commandHistory, trimmed];
     saveHistory(updatedHistory);
 
+    if (!isTauri) {
+      setOutput((prev) =>
+        prev.filter((l) => l.id !== loadingId).concat({
+          id: `r_${Date.now()}`,
+          type: "response",
+          text: `## 浏览器预览\n\nCLI 命令已模拟执行：\`${trimmed}\`\n\n真实 \`execute_cli\` 只在 Tauri 应用中可用。`,
+          timestamp: Date.now(),
+        })
+      );
+      setIsExecuting(false);
+      return;
+    }
+
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const resultJson = await invoke<string>("execute_cli", { command: trimmed });
@@ -273,7 +287,7 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
     } finally {
       setIsExecuting(false);
     }
-  }, [commandHistory, addOutputLine]);
+  }, [commandHistory, addOutputLine, isTauri]);
 
   const handleInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -309,8 +323,8 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
       <button
         className="cli-trigger"
         onClick={() => { setIsOpen(true); setIsMinimized(false); }}
-        title="Toggle CLI (Ctrl+`)"
-        aria-label="Open CLI window"
+        title="打开 CLI（Ctrl+`）"
+        aria-label="打开 CLI 浮窗"
       >
         <FeroHaIcon name="Terminal" size={20} />
       </button>
@@ -350,14 +364,14 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
           <button
             className="cli-header-btn"
             onClick={() => setIsMinimized(true)}
-            title="Minimize"
+            title="最小化"
           >
             <FeroHaIcon name="Minus" size={12} />
           </button>
           <button
             className="cli-header-btn"
             onClick={() => { setIsOpen(false); setIsMinimized(false); }}
-            title="Close"
+            title="关闭"
           >
             <FeroHaIcon name="X" size={12} />
           </button>
@@ -370,12 +384,12 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
             {output.length === 0 && (
               <div className="cli-output-empty">
                 <FeroHaIcon name="Terminal" size={32} />
-                <p>Type <code>/agent ...</code> to start</p>
+                <p>输入 <code>/agent ...</code> 开始</p>
                 <div className="cli-shortcut-hints">
-                  <span><kbd>Enter</kbd> Execute</span>
-                  <span><kbd>Shift+Enter</kbd> New line</span>
-                  <span><kbd>↑</kbd><kbd>↓</kbd> History</span>
-                  <span><kbd>Esc</kbd> Minimize</span>
+                  <span><kbd>Enter</kbd> 执行</span>
+                  <span><kbd>Shift+Enter</kbd> 新行</span>
+                  <span><kbd>↑</kbd><kbd>↓</kbd> 历史</span>
+                  <span><kbd>Esc</kbd> 最小化</span>
                 </div>
               </div>
             )}
@@ -395,7 +409,7 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
             <span className="cli-input-prompt">&gt;</span>
             <textarea
               ref={inputRef}
-              className="cli-input"
+              className="cli-input feroha-textarea"
               value={inputValue}
               onChange={(e) => { setInputValue(e.target.value); setHistoryIndex(-1); }}
               onKeyDown={handleInputKeyDown}
@@ -405,7 +419,7 @@ export default function CliMiniWindow({ vaultPath: _vaultPath }: CliMiniWindowPr
             />
           </div>
 
-          <div className="cli-resize-handle" onMouseDown={onResizeStart} />
+          <div className="cli-resize-handle feroha-resize-handle" onMouseDown={onResizeStart} />
         </>
       )}
     </div>

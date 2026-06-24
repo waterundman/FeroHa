@@ -1,0 +1,29 @@
+{
+  "id": "ghost_8560a8e37b674cf59151da90933ca1ac",
+  "task_id": "task_4cf2f21c0bee4099b69089b115ba8039",
+  "source_note": "card-result.md",
+  "task_description": "Card execution: codex-live-diff-fixed-smoke",
+  "suggested_blocks": [
+    {
+      "block_id": "ghost-block-0",
+      "content": "贝叶斯更新可以看作证据对信念的校准。",
+      "operation": "suggestion",
+      "after_block_id": null,
+      "heading_context": "codex-live-diff-fixed-smoke",
+      "context": [],
+      "verified": null,
+      "verification_result": null
+    }
+  ],
+  "created_at": 1781341344915,
+  "status": "accepted",
+  "priority": 50,
+  "expires_at": null,
+  "related_ghosts": [],
+  "confidence": 1.0,
+  "feedback_history": [],
+  "accepted_blocks": [
+    "ghost-block-0"
+  ],
+  "rejected_blocks": []
+}

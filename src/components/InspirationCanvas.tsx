@@ -18,7 +18,79 @@ const COLORS: Record<string, string> = {
 
 const COLOR_KEYS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'] as const;
 
-type Mode = 'select' | 'connect' | 'delete';
+const COLOR_LABELS: Record<string, string> = {
+  red: "红色",
+  orange: "橙色",
+  yellow: "黄色",
+  green: "绿色",
+  blue: "蓝色",
+  purple: "紫色",
+  gray: "灰色",
+};
+
+export type InspirationCanvasMode = 'select' | 'connect' | 'delete';
+
+type Mode = InspirationCanvasMode;
+
+type InspirationCanvasTool =
+  | "addNote"
+  | "connect"
+  | "delete"
+  | "export"
+  | "fit"
+  | "sticky"
+  | "color"
+  | "copyLink"
+  | "deleteCard"
+  | "deleteEdge";
+
+const INSPIRATION_CANVAS_TOOL_TITLES: Record<InspirationCanvasTool, string> = {
+  addNote: "添加笔记",
+  connect: "连接模式",
+  delete: "删除模式",
+  export: "导出为 Markdown",
+  fit: "适配全部卡片",
+  sticky: "新建便签",
+  color: "更改颜色",
+  copyLink: "复制笔记链接",
+  deleteCard: "删除卡片",
+  deleteEdge: "删除连线",
+};
+
+export function inspirationCanvasToolTitle(tool: InspirationCanvasTool): string {
+  return INSPIRATION_CANVAS_TOOL_TITLES[tool];
+}
+
+export function inspirationCanvasModeHint(mode: InspirationCanvasMode): string | null {
+  if (mode === "connect") return "连接模式：从节点锚点拖到目标卡片";
+  if (mode === "delete") return "删除模式：点击卡片或连线删除";
+  return null;
+}
+
+export function buildInspirationCanvasMarkdown(
+  cards: CanvasCard[],
+  edges: CanvasEdge[],
+  exportedAt: string,
+): string {
+  const vaultCards = cards.filter(c => c.notePath);
+  const noteLines = vaultCards.length > 0
+    ? vaultCards.map(c => `- [[${c.title}]]`).join('\n')
+    : "无";
+  const edgeLines = edges.length > 0
+    ? edges
+        .map(e => {
+          const from = cards.find(c => c.id === e.fromCardId);
+          const to = cards.find(c => c.id === e.toCardId);
+          if (!from || !to) return '';
+          const label = e.label ? `（${e.label}）` : '';
+          return `- [[${from.title}]] --> [[${to.title}]]${label}`;
+        })
+        .filter(Boolean)
+        .join('\n') || "无"
+    : "无";
+
+  return `# 灵感画布导出 - ${exportedAt}\n\n## 笔记\n${noteLines}\n\n## 连接\n${edgeLines}\n`;
+}
 
 interface ConnectDrag {
   fromCardId: string;
@@ -805,24 +877,7 @@ export default function InspirationCanvas() {
 
   const handleExport = useCallback(async () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const vaultCards = cards.filter(c => c.notePath);
-    const noteLines = vaultCards.length > 0
-      ? vaultCards.map(c => `- [[${c.title}]]`).join('\n')
-      : '(none)';
-    const edgeLines = edges.length > 0
-      ? edges
-          .map(e => {
-            const from = cards.find(c => c.id === e.fromCardId);
-            const to = cards.find(c => c.id === e.toCardId);
-            if (!from || !to) return '';
-            const label = e.label ? ` (${e.label})` : '';
-            return `- [[${from.title}]] --> [[${to.title}]]${label}`;
-          })
-          .filter(Boolean)
-          .join('\n')
-      : '(none)';
-
-    const markdown = `# Canvas Export — ${new Date().toLocaleString()}\n\n## Notes\n${noteLines}\n\n## Connections\n${edgeLines}\n`;
+    const markdown = buildInspirationCanvasMarkdown(cards, edges, new Date().toLocaleString());
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -875,6 +930,8 @@ export default function InspirationCanvas() {
     height: '100%',
     overflow: 'hidden',
     backgroundColor: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
+    touchAction: 'none',
   };
 
   const toolbarStyle: React.CSSProperties = {
@@ -883,8 +940,16 @@ export default function InspirationCanvas() {
     top: 12,
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
+    gap: 6,
+    padding: 6,
+    backgroundColor: 'color-mix(in srgb, var(--bg-secondary) 88%, transparent)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 8,
+    boxShadow: '0 10px 28px rgba(0,0,0,0.32)',
+    backdropFilter: 'blur(10px)',
     zIndex: 10,
+    maxHeight: 'calc(100% - 24px)',
+    overflow: 'auto',
   };
 
   const toolBtnBase: React.CSSProperties = {
@@ -900,6 +965,7 @@ export default function InspirationCanvas() {
     color: 'var(--text-muted)',
     transition: 'all 0.15s',
     outline: 'none',
+    flexShrink: 0,
   };
 
   const toolBtnActive: React.CSSProperties = {
@@ -928,8 +994,8 @@ export default function InspirationCanvas() {
         <button
           style={toolBtnBase}
           onClick={() => setShowNoteList(v => !v)}
-          title="Add Note"
-          aria-label="Add Note"
+          title={inspirationCanvasToolTitle("addNote")}
+          aria-label={inspirationCanvasToolTitle("addNote")}
         >
           <FeroHaIcon name="Plus" size={16} />
         </button>
@@ -939,8 +1005,8 @@ export default function InspirationCanvas() {
             setMode(m => (m === 'connect' ? 'select' : 'connect'));
             setConnectDrag(null);
           }}
-          title="Connect Mode"
-          aria-label="Connect Mode"
+          title={inspirationCanvasToolTitle("connect")}
+          aria-label={inspirationCanvasToolTitle("connect")}
           aria-pressed={mode === 'connect'}
         >
           <FeroHaIcon name="Link" size={16} />
@@ -948,8 +1014,8 @@ export default function InspirationCanvas() {
         <button
           style={mode === 'delete' ? toolBtnActive : toolBtnBase}
           onClick={() => setMode(m => (m === 'delete' ? 'select' : 'delete'))}
-          title="Delete Mode"
-          aria-label="Delete Mode"
+          title={inspirationCanvasToolTitle("delete")}
+          aria-label={inspirationCanvasToolTitle("delete")}
           aria-pressed={mode === 'delete'}
         >
           <FeroHaIcon name="Trash2" size={16} />
@@ -957,16 +1023,16 @@ export default function InspirationCanvas() {
         <button
           style={toolBtnBase}
           onClick={handleExport}
-          title="Export to Markdown"
-          aria-label="Export"
+          title={inspirationCanvasToolTitle("export")}
+          aria-label={inspirationCanvasToolTitle("export")}
         >
           <FeroHaIcon name="FileDown" size={16} />
         </button>
         <button
           style={toolBtnBase}
           onClick={handleFit}
-          title="Fit All Cards"
-          aria-label="Fit"
+          title={inspirationCanvasToolTitle("fit")}
+          aria-label={inspirationCanvasToolTitle("fit")}
         >
           <FeroHaIcon name="Maximize" size={16} />
         </button>
@@ -977,19 +1043,22 @@ export default function InspirationCanvas() {
         <div
           style={{
             position: 'absolute',
-            left: 54,
-            top: 12,
-            padding: '4px 10px',
+            left: 64,
+            top: 14,
+            maxWidth: 'min(360px, calc(100% - 82px))',
+            padding: '6px 10px',
             backgroundColor: 'var(--bg-secondary)',
             border: '1px solid var(--accent-primary)',
-            borderRadius: 4,
-            fontSize: 11,
+            borderRadius: 6,
+            fontSize: 12,
             color: 'var(--accent-primary)',
             zIndex: 10,
             pointerEvents: 'none',
+            lineHeight: 1.45,
+            boxShadow: '0 8px 22px rgba(0,0,0,0.28)',
           }}
         >
-          {mode === 'connect' ? 'Connect Mode — drag from handle to card' : 'Delete Mode — click cards/edges to delete'}
+          {inspirationCanvasModeHint(mode)}
         </div>
       )}
 
@@ -1013,7 +1082,7 @@ export default function InspirationCanvas() {
           {contextMenu.type === 'card' && (
             <>
               <ContextMenuItem
-                label="Change Color"
+                label={inspirationCanvasToolTitle("color")}
                 onClick={(e) => { e.stopPropagation(); setShowColorSub(v => !v); }}
               />
               {showColorSub && (
@@ -1030,13 +1099,13 @@ export default function InspirationCanvas() {
                         border: selectedCard?.color === colorKey ? '2px solid var(--text-primary)' : '2px solid transparent',
                         cursor: 'pointer',
                       }}
-                      title={colorKey}
+                      title={COLOR_LABELS[colorKey]}
                     />
                   ))}
                 </div>
               )}
               <ContextMenuItem
-                label="Copy Note Link"
+                label={inspirationCanvasToolTitle("copyLink")}
                 onClick={(e) => {
                   e.stopPropagation();
                   const card = cards.find(c => c.id === contextMenu.targetId);
@@ -1048,7 +1117,7 @@ export default function InspirationCanvas() {
               />
               <div style={{ height: 1, backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
               <ContextMenuItem
-                label="Delete Card"
+                label={inspirationCanvasToolTitle("deleteCard")}
                 onClick={(e) => { e.stopPropagation(); deleteCard(contextMenu.targetId); }}
                 danger
               />
@@ -1057,7 +1126,7 @@ export default function InspirationCanvas() {
           {contextMenu.type === 'edge' && (
             <>
               <ContextMenuItem
-                label="Change Color"
+                label={inspirationCanvasToolTitle("color")}
                 onClick={(e) => { e.stopPropagation(); setShowColorSub(v => !v); }}
               />
               {showColorSub && (
@@ -1074,14 +1143,14 @@ export default function InspirationCanvas() {
                         border: selectedEdge?.color === colorKey ? '2px solid var(--text-primary)' : '2px solid transparent',
                         cursor: 'pointer',
                       }}
-                      title={colorKey}
+                      title={COLOR_LABELS[colorKey]}
                     />
                   ))}
                 </div>
               )}
               <div style={{ height: 1, backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
               <ContextMenuItem
-                label="Delete Edge"
+                label={inspirationCanvasToolTitle("deleteEdge")}
                 onClick={(e) => { e.stopPropagation(); deleteEdge(contextMenu.targetId); }}
                 danger
               />
@@ -1095,32 +1164,33 @@ export default function InspirationCanvas() {
         <div
           style={{
             position: 'absolute',
-            left: 54,
-            top: 12,
-            width: 260,
-            maxHeight: 400,
+            left: 64,
+            top: 14,
+            width: 'min(320px, calc(100% - 82px))',
+            maxHeight: 'min(440px, calc(100% - 28px))',
             backgroundColor: 'var(--bg-secondary)',
             border: '1px solid var(--border-color)',
             borderRadius: 8,
             zIndex: 100,
-            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+            boxShadow: '0 16px 40px rgba(0,0,0,0.42)',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
+            color: 'var(--text-primary)',
           }}
         >
-          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border-color)', display: 'flex', gap: 6 }}>
+          <div style={{ padding: '10px', borderBottom: '1px solid var(--border-color)', display: 'flex', gap: 8 }}>
             <input
               type="text"
-              placeholder="Search notes..."
+              placeholder="搜索笔记..."
               value={noteSearch}
               onChange={(e) => setNoteSearch(e.target.value)}
               style={{
                 flex: 1,
                 backgroundColor: 'var(--bg-input)',
                 border: '1px solid var(--border-color)',
-                borderRadius: 4,
-                padding: '4px 8px',
+                borderRadius: 6,
+                padding: '6px 8px',
                 fontSize: 12,
                 color: 'var(--text-primary)',
                 outline: 'none',
@@ -1130,24 +1200,24 @@ export default function InspirationCanvas() {
             <button
               onClick={addStickyNote}
               style={{
-                padding: '2px 8px',
+                padding: '4px 9px',
                 backgroundColor: 'var(--bg-input)',
                 border: '1px solid var(--border-color)',
-                borderRadius: 4,
+                borderRadius: 6,
                 fontSize: 11,
                 color: 'var(--text-muted)',
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
               }}
-              title="Add sticky note (not linked to a file)"
+              title={inspirationCanvasToolTitle("sticky")}
             >
-              Sticky
+              便签
             </button>
           </div>
           <div style={{ overflow: 'auto', flex: 1, maxHeight: 330 }}>
             {filteredNotes.length === 0 && (
               <div style={{ padding: '12px 10px', fontSize: 12, color: 'var(--text-muted)' }}>
-                {noteSearch ? 'No matching notes' : 'No notes in vault'}
+                {noteSearch ? '没有匹配的笔记' : '当前笔记库没有笔记'}
               </div>
             )}
             {filteredNotes.map(note => (

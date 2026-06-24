@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "FeroHa",
+  "productName": "贝叶斯笔记",
   "version": "2.14.2",
   "identifier": "com.feroha.note",
   "build": {
     "beforeDevCommand": "npm run dev:web",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -13,12 +13,17 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "FeroHa - Dual-Track AI Note IDE",
+        "label": "main",
+        "create": false,
+        "title": "贝叶斯笔记",
+        "dataDirectory": "main-webview",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
+        "decorations": false,
+        "shadow": true,
         "fullscreen": false
       }
     ],
@@ -46,17 +51,6 @@
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
-    }
-  },
-  "plugins": {
-    "shell": {
-      "open": true
-    },
-    "fs": {
-      "scope": ["**"]
-    },
-    "dialog": {
-      "all": true
     }
   }
 }

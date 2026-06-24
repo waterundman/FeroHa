@@ -1,5 +1,5 @@
-import { useEffect, useCallback } from "react";
-import { useAppStore } from "./useAppStore";
+import { useCallback, useEffect } from "react";
+import { useAppStore, type AppMode, type ActivePanel } from "./useAppStore";
 
 export interface ShortcutConfig {
   key: string;
@@ -18,6 +18,36 @@ interface KeyboardShortcutProps {
   onToggleCli?: () => void;
 }
 
+export interface ShortcutHelpRow {
+  key: string;
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  description: string;
+}
+
+export function shortcutPanelsForMode(mode: AppMode): { secondPanel: ActivePanel; thirdPanel: ActivePanel } {
+  return {
+    secondPanel: mode === "ai" ? "graph" : "inspiration",
+    thirdPanel: mode === "ai" ? "tasks" : "diff",
+  };
+}
+
+export function shortcutHelpRows(mode: AppMode): ShortcutHelpRow[] {
+  return [
+    { key: "N", ctrl: true, description: "新建笔记" },
+    { key: "P", ctrl: true, description: "快速搜索" },
+    { key: "B", ctrl: true, description: "切换侧栏" },
+    { key: "1", ctrl: true, description: "编辑器" },
+    { key: "2", ctrl: true, description: mode === "ai" ? "知识图谱" : "灵感画布" },
+    { key: "3", ctrl: true, description: mode === "ai" ? "Agent 任务" : "差异审查" },
+    { key: "/", ctrl: true, description: "快捷键帮助" },
+    { key: "←", alt: true, description: "后退导航" },
+    { key: "→", alt: true, description: "前进导航" },
+    { key: "`", ctrl: true, description: "打开 CLI 浮窗" },
+  ];
+}
+
 export function useKeyboardShortcuts({
   onNewNote,
   onToggleSidebar,
@@ -26,8 +56,12 @@ export function useKeyboardShortcuts({
   onToggleCli,
 }: KeyboardShortcutProps = {}) {
   const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const mode = useAppStore((s) => s.mode);
   const goBack = useAppStore((s) => s.goBack);
   const goForward = useAppStore((s) => s.goForward);
+
+  const { secondPanel, thirdPanel } = shortcutPanelsForMode(mode);
+  const shortcutRows = shortcutHelpRows(mode);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -61,13 +95,13 @@ export function useKeyboardShortcuts({
 
       if (ctrl && !shift && !alt && e.key === "2") {
         e.preventDefault();
-        setActivePanel("graph");
+        setActivePanel(secondPanel);
         return;
       }
 
       if (ctrl && !shift && !alt && e.key === "3") {
         e.preventDefault();
-        setActivePanel("diff");
+        setActivePanel(thirdPanel);
         return;
       }
 
@@ -92,10 +126,20 @@ export function useKeyboardShortcuts({
       if (alt && !ctrl && !shift && e.key === "ArrowRight") {
         e.preventDefault();
         goForward();
-        return;
       }
     },
-    [setActivePanel, goBack, goForward, onNewNote, onToggleSidebar, onSearch, onShowHelp, onToggleCli]
+    [
+      setActivePanel,
+      secondPanel,
+      thirdPanel,
+      goBack,
+      goForward,
+      onNewNote,
+      onToggleSidebar,
+      onSearch,
+      onShowHelp,
+      onToggleCli,
+    ],
   );
 
   useEffect(() => {
@@ -107,15 +151,22 @@ export function useKeyboardShortcuts({
 
   return {
     shortcuts: [
-      { key: "N", ctrl: true, description: "新建笔记", action: () => onNewNote?.() },
-      { key: "P", ctrl: true, description: "快速搜索", action: () => onSearch?.() },
-      { key: "B", ctrl: true, description: "切换侧边栏", action: () => onToggleSidebar?.() },
-      { key: "1", ctrl: true, description: "Editor面板", action: () => setActivePanel("editor") },
-      { key: "2", ctrl: true, description: "Graph面板", action: () => setActivePanel("graph") },
-      { key: "3", ctrl: true, description: "Diff面板", action: () => setActivePanel("diff") },
-      { key: "/", ctrl: true, description: "快捷键帮助", action: () => onShowHelp?.() },
-      { key: "←", alt: true, description: "后退导航", action: () => goBack() },
-      { key: "`", ctrl: true, description: "Toggle CLI window", action: () => onToggleCli?.() },
+      { ...shortcutRows[0], action: () => onNewNote?.() },
+      { ...shortcutRows[1], action: () => onSearch?.() },
+      { ...shortcutRows[2], action: () => onToggleSidebar?.() },
+      { ...shortcutRows[3], action: () => setActivePanel("editor") },
+      {
+        ...shortcutRows[4],
+        action: () => setActivePanel(secondPanel),
+      },
+      {
+        ...shortcutRows[5],
+        action: () => setActivePanel(thirdPanel),
+      },
+      { ...shortcutRows[6], action: () => onShowHelp?.() },
+      { ...shortcutRows[7], action: () => goBack() },
+      { ...shortcutRows[8], action: () => goForward() },
+      { ...shortcutRows[9], action: () => onToggleCli?.() },
     ] as ShortcutConfig[],
   };
 }

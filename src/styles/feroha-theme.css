@@ -1,4 +1,214 @@
 /* FeroHa Cyber-Organic Minimalism Theme — CSS Variables */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.feroha-icon {
+  color: var(--icon-default, currentColor);
+}
+
+button .feroha-icon {
+  color: inherit;
+}
+
+.feroha-icon:hover {
+  color: var(--icon-hover, currentColor);
+}
+
+button:hover .feroha-icon {
+  color: inherit;
+}
+
+.feroha-icon svg {
+  stroke: currentColor;
+  transition:
+    stroke var(--transition-fast) var(--easing-smooth),
+    filter var(--transition-fast) var(--easing-smooth),
+    transform var(--transition-fast) var(--easing-smooth);
+}
+
+button:hover .feroha-icon svg,
+.feroha-icon:hover svg {
+  filter: drop-shadow(0 0 4px rgba(42, 224, 154, 0.18));
+  transform: none;
+}
+
+body {
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+:root {
+  --control-bg: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-input));
+  --control-bg-hover: color-mix(in srgb, var(--bg-hover) 80%, var(--bg-input));
+  --control-border: color-mix(in srgb, var(--border-color) 72%, transparent);
+  --control-border-strong: var(--accent-primary);
+  --control-placeholder: var(--text-muted);
+  --control-shadow-focus: 0 0 0 2px var(--accent-glow);
+  --resize-handle-bg: color-mix(in srgb, var(--border-color) 42%, transparent);
+  --resize-handle-active: color-mix(in srgb, var(--accent-primary) 52%, transparent);
+  --resize-handle-grip: color-mix(in srgb, var(--text-muted) 64%, transparent);
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--border-color) 68%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent-primary) 58%, transparent);
+}
+
+* {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+textarea::-webkit-resizer {
+  background:
+    linear-gradient(135deg, transparent 0 52%, var(--resize-handle-grip) 52% 58%, transparent 58%),
+    linear-gradient(135deg, transparent 0 68%, var(--resize-handle-grip) 68% 74%, transparent 74%);
+}
+
+.feroha-control,
+.feroha-input,
+.feroha-select,
+.feroha-textarea,
+.feroha-search {
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  outline: none;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.feroha-input,
+.feroha-select,
+.feroha-search {
+  min-height: 30px;
+  padding: 6px 9px;
+}
+
+.feroha-textarea {
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.feroha-input::placeholder,
+.feroha-textarea::placeholder,
+.feroha-search::placeholder {
+  color: var(--control-placeholder);
+}
+
+.feroha-control:hover,
+.feroha-input:hover,
+.feroha-select:hover,
+.feroha-textarea:hover,
+.feroha-search:hover {
+  background: var(--control-bg-hover);
+}
+
+.feroha-control:focus,
+.feroha-control:focus-visible,
+.feroha-input:focus,
+.feroha-input:focus-visible,
+.feroha-select:focus,
+.feroha-select:focus-visible,
+.feroha-textarea:focus,
+.feroha-textarea:focus-visible,
+.feroha-search:focus,
+.feroha-search:focus-visible {
+  border-color: var(--control-border-strong);
+  box-shadow: var(--control-shadow-focus);
+}
+
+.feroha-resize-handle {
+  background: var(--resize-handle-bg);
+  border-radius: 2px;
+  position: relative;
+  transition:
+    background var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.feroha-resize-handle:hover,
+.feroha-resize-handle:active {
+  background: var(--resize-handle-active);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.app-resize-separator[data-separator],
+.editor-split-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-resize-separator[data-separator]::before,
+.editor-split-divider::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--resize-handle-grip);
+  opacity: 0.72;
+}
+
+.app-resize-separator[data-separator][aria-orientation="vertical"]::before,
+.editor-split-divider[style*="col-resize"]::before {
+  width: 1px;
+  height: 28px;
+}
+
+.app-resize-separator[data-separator][aria-orientation="horizontal"]::before,
+.editor-split-divider[style*="row-resize"]::before {
+  width: 28px;
+  height: 1px;
+}
+
 :root[data-theme="feroha"] {
   --bg-primary: #030d08;
   --bg-secondary: #061412;
@@ -54,6 +264,62 @@
   --trust-mid-color: #D9A05B;
   --trust-high-color: #2ae09a;
 }
+
+:root[data-theme="classic"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-sidebar: #1e1e2e;
+  --bg-input: #313244;
+  --bg-hover: #45475a;
+  --text-primary: #cdd6f4;
+  --text-secondary: #bac2de;
+  --text-muted: #9399b2;
+  --accent-primary: #89b4fa;
+  --accent-secondary: #585b70;
+  --accent-glow: rgba(137, 180, 250, 0.18);
+  --border-color: #45475a;
+  --border-muted: rgba(88, 91, 112, 0.52);
+  --diff-warn: #f9e2af;
+  --diff-insert: #a6e3a1;
+  --diff-delete: #f38ba8;
+  --diff-modify: #f9e2af;
+  --status-idle: #9399b2;
+  --status-checking: #89b4fa;
+  --status-researching: #a6e3a1;
+  --status-completed: #a6e3a1;
+  --status-error: #f38ba8;
+  --status-cancelled: #9399b2;
+  --icon-default: #bac2de;
+  --icon-hover: #89b4fa;
+  --easing-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-fast: 200ms;
+  --transition-normal: 300ms;
+  --transition-slow: 500ms;
+  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-family-editor: 'JetBrains Mono', 'Fira Code', monospace;
+  --tab-bg: #181825;
+  --tab-active-bg: #313244;
+  --tab-hover-bg: #45475a;
+  --tab-border: #45475a;
+  --tab-text: #bac2de;
+  --tab-close-hover: rgba(243, 139, 168, 0.2);
+  --tab-dirty-color: #f9e2af;
+  --tab-height: 36px;
+  --dashboard-bg: #181825;
+  --dashboard-card-bg: #313244;
+  --dashboard-card-border: #45475a;
+  --dashboard-accent: #89b4fa;
+  --status-pending-color: #f9e2af;
+  --status-running-color: #89b4fa;
+  --status-done-color: #a6e3a1;
+  --status-error-color: #f38ba8;
+  --status-idle-color: #9399b2;
+  --trust-low-color: #f38ba8;
+  --trust-mid-color: #f9e2af;
+  --trust-high-color: #a6e3a1;
+}
+
 :root[data-theme="macchiato"] {
   --bg-primary: #24273a;
   --bg-secondary: #1e2030;
@@ -209,19 +475,114 @@
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 4px;
-  min-width: 160px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  min-width: 184px;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.32);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .feroha-context-menu-item {
-  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 9px;
   cursor: pointer;
   border-radius: 4px;
   color: var(--text-primary);
   font-size: 13px;
+  text-align: left;
 }
 .feroha-context-menu-item:hover {
-  background: var(--accent-primary);
-  color: #000;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.feroha-context-menu-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.feroha-context-menu-item.is-danger {
+  color: var(--diff-delete);
+}
+.feroha-context-menu-item.is-danger:hover {
+  background: color-mix(in srgb, var(--diff-delete) 13%, transparent);
+}
+.feroha-context-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feroha-context-menu-shortcut {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: 16px;
+}
+.feroha-context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-muted);
+}
+
+[data-api-debug-success]::before,
+[data-api-debug-success]::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: 4000;
+}
+
+[data-api-debug-success]::before {
+  inset: 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(91, 222, 170, 0.32);
+  background:
+    linear-gradient(90deg, transparent, rgba(91, 222, 170, 0.34), transparent) top left / 38% 1px no-repeat,
+    linear-gradient(180deg, transparent, rgba(91, 222, 170, 0.22), transparent) top right / 1px 45% no-repeat,
+    linear-gradient(270deg, transparent, rgba(91, 222, 170, 0.24), transparent) bottom right / 44% 1px no-repeat;
+  box-shadow:
+    inset 0 0 0 1px rgba(91, 222, 170, 0.08),
+    0 0 22px rgba(91, 222, 170, 0.12);
+  animation: api-debug-border-breathe 5.2s var(--easing-smooth) forwards;
+}
+
+[data-api-debug-success]::after {
+  inset: 9px;
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(184, 255, 224, 0.54) 0 1px, transparent 2px),
+    radial-gradient(circle at 82% 18%, rgba(91, 222, 170, 0.34) 0 1px, transparent 2px),
+    radial-gradient(circle at 74% 88%, rgba(184, 255, 224, 0.36) 0 1px, transparent 2px),
+    linear-gradient(115deg, transparent 0 42%, rgba(91, 222, 170, 0.16) 46%, transparent 52%);
+  opacity: 0;
+  animation: api-debug-particles 5.2s var(--easing-smooth) forwards;
+}
+
+@keyframes api-debug-border-breathe {
+  0% { opacity: 0; filter: blur(2px); }
+  14% { opacity: 1; filter: blur(0); }
+  76% { opacity: 0.88; }
+  100% { opacity: 0; filter: blur(2px); }
+}
+
+@keyframes api-debug-particles {
+  0% { opacity: 0; transform: translate3d(-6px, 4px, 0); }
+  18% { opacity: 0.86; }
+  82% { opacity: 0.34; transform: translate3d(8px, -5px, 0); }
+  100% { opacity: 0; transform: translate3d(12px, -8px, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-api-debug-success]::before {
+    animation: none;
+    opacity: 1;
+  }
+  [data-api-debug-success]::after {
+    display: none;
+  }
 }
 
 .shortcuts-table {

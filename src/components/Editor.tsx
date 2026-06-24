@@ -2,17 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { keymap, ViewPlugin, Decoration, DecorationSet, ViewUpdate } from "@codemirror/view";
-import { RangeSetBuilder, Compartment } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, Compartment } from "@codemirror/state";
 import { searchKeymap } from "@codemirror/search";
 import { autocompletion, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { slashCommandSource, wikiLinkSource, headingSource, tagSource } from "../lib/completionSources";
 import { marked } from "marked";
 import { useAppStore, type NoteMeta } from "../hooks/useAppStore";
 import { useSettings, useSettingsStore } from "../hooks/useSettings";
+import { sendTaskToAgent } from "../lib/ipc";
 import { showToast } from "./toastBus";
 import EditorToolbar from "./EditorToolbar";
 import SelectionToolbar from "./SelectionToolbar";
 import FeroHaIcon from "./FeroHaIcon";
+import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 const lineWrapCompartment = new Compartment();
 
@@ -24,10 +26,10 @@ export function triggerGoToLine(line: number) {
 interface EditorProps {
   isTauri: boolean;
   note?: { path: string; content: string; isDirty: boolean } | null;
+  readOnly?: boolean;
+  readOnlyLabel?: string;
+  onCreateNote?: () => void;
 }
-
-const DEFAULT_DOC =
-  "# Welcome to Dual-Track Note IDE\n\nStart writing...\n\nTry `/agent` to invoke AI commands.";
 
 function countWords(content: string) {
   return content.split(/\s+/).filter(Boolean).length;
@@ -181,12 +183,13 @@ const listContinuationKeymap = keymap.of([
   }
 ]);
 
-export default function Editor({ isTauri, note }: EditorProps) {
+export default function Editor({ isTauri, note, readOnly = false, readOnlyLabel, onCreateNote }: EditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const handleSaveRef = useRef<(() => Promise<void>) | null>(null);
 
   const storeCurrentNote = useAppStore((s) => s.currentNote);
+  const vaultPath = useAppStore((s) => s.vaultPath);
   const storeIsDirty = useAppStore((s) => s.isDirty);
   const allNotes = useAppStore((s) => s.notes);
   const setCurrentContent = useAppStore((s) => s.setCurrentContent);
@@ -198,7 +201,11 @@ export default function Editor({ isTauri, note }: EditorProps) {
   const markTabClean = useAppStore((s) => s.markTabClean);
 
   const currentNote = note ?? storeCurrentNote;
+  const hasOpenNote = Boolean(currentNote);
   const isDirty = note ? note.isDirty : storeIsDirty;
+  const isReadOnlyNote = Boolean(readOnly || currentNote?.path.startsWith(".dualtrack/"));
+  const readOnlyBadgeLabel = readOnlyLabel ?? "AI 工作区只读";
+  const canCreateNoteFromEmptyState = Boolean(onCreateNote) && !readOnly && (!isTauri || Boolean(vaultPath));
 
   const [outlineVisible, setOutlineVisible] = useState(false);
   const [wordWrap, setWordWrap] = useState(false);
@@ -210,26 +217,48 @@ export default function Editor({ isTauri, note }: EditorProps) {
   const suppressChangeRef = useRef(false);
 
   const currentNoteRef = useRef(currentNote);
+  const externalNoteModeRef = useRef(Boolean(note));
   const isTauriRef = useRef(isTauri);
 
   const [selToolbar, setSelToolbar] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     currentNoteRef.current = currentNote;
   }, [currentNote]);
 
   useEffect(() => {
+    externalNoteModeRef.current = Boolean(note);
+  }, [note]);
+
+  useEffect(() => {
     isTauriRef.current = isTauri;
   }, [isTauri]);
 
   const handleSave = useCallback(async () => {
+    if (isReadOnlyNote) {
+      setSaveStatus("idle");
+      showToast("info", `${readOnlyBadgeLabel}，未写入文件`);
+      return;
+    }
+
+    if (!currentNote) {
+      setSaveStatus("idle");
+      showToast("info", isTauri && !vaultPath ? "先打开一个笔记库，再新建文档" : "先新建或打开一篇笔记");
+      return;
+    }
+
     const content = viewRef.current
       ? viewRef.current.state.doc.toString()
-      : currentNote?.content || "";
+      : currentNote.content;
 
     setSaveStatus("saving");
 
-    if (isTauri && currentNote) {
+    if (isTauri) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("save_note", {
@@ -255,18 +284,102 @@ export default function Editor({ isTauri, note }: EditorProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = currentNote?.path || "untitled.md";
+      a.download = currentNote.path;
       a.click();
       URL.revokeObjectURL(url);
       setSaveStatus("success");
       showToast("success", "Note downloaded successfully");
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
-  }, [currentNote, isTauri, markClean, setSaveStatus, note, markTabClean]);
+  }, [currentNote, isReadOnlyNote, isTauri, markClean, readOnlyBadgeLabel, setSaveStatus, note, markTabClean, vaultPath]);
 
   useEffect(() => {
     handleSaveRef.current = handleSave;
   }, [handleSave]);
+
+  const captureSelectionSnapshot = useCallback(async (text: string) => {
+    const notePath = currentNote?.path;
+    if (!notePath || !isTauri) return;
+
+    const view = viewRef.current;
+    let start = 0;
+    let end = text.length;
+    if (view && !view.state.selection.main.empty) {
+      start = view.state.selection.main.from;
+      end = view.state.selection.main.to;
+    } else if (currentNote?.content) {
+      const index = currentNote.content.indexOf(text);
+      if (index >= 0) {
+        start = index;
+        end = index + text.length;
+      }
+    }
+
+    await emitSelectionSubmit(notePath, text, start, end, isTauri);
+  }, [currentNote?.content, currentNote?.path, isTauri]);
+
+  const submitSelectionTaskToAi = useCallback(async (action: string, text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    if (!isTauri) {
+      showToast("info", `${action} task staged in browser preview`);
+      return;
+    }
+
+    const taskType = action === "analyze" || action === "submit" ? "research" : "write_proposal";
+    const reviewMode = taskType === "research" ? "read_only_auto_queue" : "draft_only";
+    try {
+      await captureSelectionSnapshot(trimmed);
+      const result = await sendTaskToAgent({
+        content: trimmed,
+        intent: `${action}: ${currentNote?.path ?? "selection"}`,
+        contextNote: currentNote?.path ?? null,
+        scope: "selected_text",
+        source: "human_editor_context_menu",
+        reviewMode,
+        expectedOutput:
+          taskType === "research"
+            ? "Read the selected text and return an analysis for the human review surface."
+            : "Create a draft proposal from the selected text without writing to files.",
+        taskType,
+      });
+      showToast(
+        "info",
+        `${action} task submitted to AI Manager (${result.status})`
+      );
+    } catch (e) {
+      console.error("Selection task context menu error:", e);
+      const message = e instanceof Error ? e.message : String(e);
+      showToast("error", `${action} task failed: ${message}`);
+    }
+  }, [captureSelectionSnapshot, currentNote?.path, isTauri]);
+
+  const handleEditorContextMenu = useCallback((event: MouseEvent, view: EditorView) => {
+    const sel = view.state.selection.main;
+    if (sel.empty) return false;
+    const selText = view.state.sliceDoc(sel.from, sel.to);
+    if (!selText.trim()) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    setSelToolbar(null);
+    setSelectionContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      text: selText,
+    });
+    return true;
+  }, []);
+
+  const handleEmptyCreateClick = useCallback(() => {
+    if (readOnly) return;
+    if (isTauri && !vaultPath) {
+      showToast("info", "先打开一个笔记库，再新建文档");
+      return;
+    }
+    onCreateNote?.();
+  }, [isTauri, onCreateNote, readOnly, vaultPath]);
 
   const handlePaste = useCallback(async (event: ClipboardEvent) => {
     const items = event.clipboardData?.items;
@@ -348,10 +461,10 @@ export default function Editor({ isTauri, note }: EditorProps) {
   }, [handleGoToLine]);
 
   useEffect(() => {
-    if (viewMode !== "edit" || !editorRef.current) return;
+    if (!hasOpenNote || viewMode !== "edit" || !editorRef.current) return;
 
     const editorView = new EditorView({
-      doc: currentNoteRef.current?.content || DEFAULT_DOC,
+      doc: currentNoteRef.current?.content ?? "",
       extensions: [
         basicSetup,
         autocompletion({
@@ -364,6 +477,8 @@ export default function Editor({ isTauri, note }: EditorProps) {
         listContinuationKeymap,
         markdown(),
         tagHighlighter,
+        EditorState.readOnly.of(isReadOnlyNote),
+        EditorView.editable.of(!isReadOnlyNote),
         lineWrapCompartment.of([]),
         keymap.of([
           {
@@ -445,6 +560,9 @@ export default function Editor({ isTauri, note }: EditorProps) {
 
             return false;
           },
+          contextmenu(event, view) {
+            return handleEditorContextMenu(event, view);
+          },
           mouseup(_event, view) {
             if (!isTauriRef.current) return false;
             setTimeout(() => {
@@ -467,12 +585,12 @@ export default function Editor({ isTauri, note }: EditorProps) {
           },
         }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          if (update.docChanged && !isReadOnlyNote) {
             if (suppressChangeRef.current) {
               suppressChangeRef.current = false;
             } else {
-              if (note) {
-                setTabContent(currentNote?.path ?? "", update.state.doc.toString());
+              if (externalNoteModeRef.current) {
+                setTabContent(currentNoteRef.current?.path ?? "", update.state.doc.toString());
               } else {
                 setCurrentContent(update.state.doc.toString());
               }
@@ -509,7 +627,7 @@ export default function Editor({ isTauri, note }: EditorProps) {
       editorView.destroy();
       viewRef.current = null;
     };
-  }, [setCurrentContent, setCursorPos, settings.editorFontSize, viewMode, note, setTabContent]);
+  }, [handleEditorContextMenu, hasOpenNote, isReadOnlyNote, setCurrentContent, setCursorPos, settings.editorFontSize, viewMode, setTabContent]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -542,14 +660,15 @@ export default function Editor({ isTauri, note }: EditorProps) {
 
   useEffect(() => {
     if (!settings.autoSaveInterval || settings.autoSaveInterval < 5) return;
+    if (isReadOnlyNote) return;
     if (!isTauri || !currentNote || !isDirty) return;
     const timer = window.setTimeout(() => {
       handleSaveRef.current?.();
     }, settings.autoSaveInterval * 1000);
     return () => window.clearTimeout(timer);
-  }, [currentNote, isDirty, isTauri, settings.autoSaveInterval]);
+  }, [currentNote, isDirty, isReadOnlyNote, isTauri, settings.autoSaveInterval]);
 
-  const content = currentNote?.content || DEFAULT_DOC;
+  const content = currentNote?.content ?? "";
 
   useEffect(() => {
     if (viewMode !== "preview") return;
@@ -600,14 +719,92 @@ export default function Editor({ isTauri, note }: EditorProps) {
     []
   );
 
+  const selectionContextMenuItems: ContextMenuItem[] = selectionContextMenu
+    ? [
+        {
+          id: "submit-selection-task",
+          label: "提交给 AI",
+          icon: "Send",
+          shortcut: "Ctrl+Shift+Enter",
+          onSelect: () => {
+            void submitSelectionTaskToAi("submit", selectionContextMenu.text);
+          },
+        },
+        {
+          id: "analyze-selection",
+          label: "分析选区",
+          icon: "FileSearch",
+          onSelect: () => {
+            void submitSelectionTaskToAi("analyze", selectionContextMenu.text);
+          },
+        },
+        {
+          id: "rewrite-selection",
+          label: "改写选区",
+          icon: "PenLine",
+          onSelect: () => {
+            void submitSelectionTaskToAi("rewrite", selectionContextMenu.text);
+          },
+        },
+        { id: "selection-tools-separator", type: "separator" },
+        {
+          id: "copy-selection",
+          label: "复制选区",
+          icon: "Copy",
+          shortcut: "Ctrl+C",
+          onSelect: () => {
+            void navigator.clipboard?.writeText(selectionContextMenu.text);
+            showToast("info", "已复制选区");
+          },
+        },
+      ]
+    : [];
+
+  if (!hasOpenNote) {
+    return (
+      <div style={styles.wrapper}>
+        <div style={styles.emptyState} data-testid="editor-empty-state">
+          <div style={styles.emptyIcon}>
+            <FeroHaIcon name={readOnly ? "BookOpen" : "FilePlus"} size={28} />
+          </div>
+          <div style={styles.emptyTitle}>
+            {readOnly ? readOnlyBadgeLabel : "还没有打开笔记"}
+          </div>
+          <div style={styles.emptyBody}>
+            {readOnly
+              ? "AI 面当前只读。切回人类面后，可以新建或编辑文档。"
+              : vaultPath || !isTauri
+                ? "从左侧笔记库选择一篇笔记，或新建文档开始记录。"
+                : "先打开一个笔记库，然后新建文档开始记录。"}
+          </div>
+          {!readOnly && (
+            <button
+              type="button"
+              style={{
+                ...styles.emptyPrimaryBtn,
+                ...(!canCreateNoteFromEmptyState ? styles.emptyPrimaryBtnDisabled : {}),
+              }}
+              onClick={handleEmptyCreateClick}
+              disabled={!canCreateNoteFromEmptyState}
+            >
+              <FeroHaIcon name="FilePlus" size={14} />
+              新建文档
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.wrapper}>
       <div style={styles.toolbar}>
         <div style={styles.fileInfo}>
           <span style={styles.fileName}>
-            {currentNote?.path || "untitled.md"}
+            {currentNote?.path ?? ""}
           </span>
           {isDirty && <span style={styles.dirtyMark}>*</span>}
+          {isReadOnlyNote && <span style={styles.readOnlyBadge}>{readOnlyBadgeLabel}</span>}
         </div>
         <div style={styles.toolbarRight}>
           <button
@@ -616,13 +813,13 @@ export default function Editor({ isTauri, note }: EditorProps) {
               ...(outlineVisible ? styles.outlineBtnActive : {}),
             }}
             onClick={() => setOutlineVisible(!outlineVisible)}
-            title="Toggle outline"
-            aria-label="Toggle outline"
+            title="切换大纲"
+            aria-label="切换大纲"
           >
             <FeroHaIcon name="ListTree" size={14} />
           </button>
           <span style={styles.wordCount}>
-            {charCount.toLocaleString()} chars · {wordCount} words
+            {charCount.toLocaleString()} 字符 · {wordCount} 词
           </span>
           <button
             style={{
@@ -630,8 +827,8 @@ export default function Editor({ isTauri, note }: EditorProps) {
               ...(showMeta ? styles.outlineBtnActive : {}),
             }}
             onClick={() => setShowMeta(!showMeta)}
-            title="Note metadata"
-            aria-label="Toggle note metadata"
+            title="笔记元数据"
+            aria-label="切换笔记元数据"
           >
             <FeroHaIcon name="Info" size={14} />
           </button>
@@ -643,19 +840,29 @@ export default function Editor({ isTauri, note }: EditorProps) {
               ...(saveStatus === "error" ? styles.saveBtnError : {}),
             }}
             onClick={handleSave}
-            disabled={saveStatus === "saving"}
+            disabled={saveStatus === "saving" || isReadOnlyNote}
+            aria-label={isReadOnlyNote ? "只读" : undefined}
           >
-            {saveStatus === "saving"
-              ? "Saving"
+            {isReadOnlyNote
+              ? "只读"
+              : saveStatus === "saving"
+              ? "保存中"
               : saveStatus === "success"
-                ? "Saved"
+                ? "已保存"
                 : saveStatus === "error"
-                  ? "Error"
-                  : "Save"}
+                  ? "错误"
+                  : "保存"}
           </button>
         </div>
       </div>
-      <EditorToolbar viewRef={viewRef} viewMode={viewMode} onToggleViewMode={() => setViewMode(viewMode === "edit" ? "preview" : "edit")} onToggleLineWrap={() => setWordWrap(!wordWrap)} lineWrapActive={wordWrap} />
+      <EditorToolbar
+        viewRef={viewRef}
+        viewMode={viewMode}
+        onToggleViewMode={() => setViewMode(viewMode === "edit" ? "preview" : "edit")}
+        onToggleLineWrap={() => setWordWrap(!wordWrap)}
+        lineWrapActive={wordWrap}
+        readOnly={isReadOnlyNote}
+      />
       {showMeta && currentNote && (
         <MetaBar
           content={content}
@@ -676,6 +883,7 @@ export default function Editor({ isTauri, note }: EditorProps) {
             ref={editorRef}
             style={styles.editor}
             onClick={(e) => {
+              if (isReadOnlyNote) return;
               const view = viewRef.current;
               if (!view) return;
               const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -718,26 +926,22 @@ export default function Editor({ isTauri, note }: EditorProps) {
             ))}
           </div>
         )}
+        {selectionContextMenu && (
+          <div data-testid="selection-task-context-menu">
+            <ContextMenu
+              point={{ x: selectionContextMenu.x, y: selectionContextMenu.y }}
+              items={selectionContextMenuItems}
+              onClose={() => setSelectionContextMenu(null)}
+            />
+          </div>
+        )}
         <SelectionToolbar
           visible={selToolbar !== null}
           x={selToolbar?.x ?? 0}
           y={selToolbar?.y ?? 0}
           onAction={async (action) => {
             if (!selToolbar) return;
-            const cardType = action === "correct" ? "rewrite" : action;
-            try {
-              const { invoke } = await import("@tauri-apps/api/core");
-              await invoke("submit_task", {
-                task: {
-                  card_type: cardType,
-                  prompt: `${action}: ${selToolbar.text.slice(0, 500)}`,
-                  params: { target: currentNote?.path ?? "", content: selToolbar.text, style: action },
-                },
-              });
-              showToast("info", `${action} task submitted`);
-            } catch (e) {
-              console.error("Selection action error:", e);
-            }
+            await submitSelectionTaskToAi(action, selToolbar.text);
             setSelToolbar(null);
           }}
           onDismiss={() => setSelToolbar(null)}
@@ -767,35 +971,35 @@ function MetaBar({ content, currentNotePath, allNotes, backlinksCount }: MetaBar
   return (
     <div style={metaStyles.bar}>
       <div style={metaStyles.group}>
-        <span style={metaStyles.label}>Words:</span>
+        <span style={metaStyles.label}>词数：</span>
         <span style={metaStyles.value}>{wordCount}</span>
       </div>
       <div style={metaStyles.separator} />
       <div style={metaStyles.group}>
-        <span style={metaStyles.label}>Chars:</span>
+        <span style={metaStyles.label}>字符：</span>
         <span style={metaStyles.value}>{charCount}</span>
       </div>
       <div style={metaStyles.separator} />
       <div style={metaStyles.group}>
-        <span style={metaStyles.label}>Tags:</span>
+        <span style={metaStyles.label}>标签：</span>
         <span style={metaStyles.value}>
-          {tags.length > 0 ? tags.join(", ") : <em style={{ color: "var(--text-muted)" }}>none</em>}
+          {tags.length > 0 ? tags.join(", ") : <em style={{ color: "var(--text-muted)" }}>无</em>}
         </span>
       </div>
       {modifiedDate && (
         <>
           <div style={metaStyles.separator} />
           <div style={metaStyles.group}>
-            <span style={metaStyles.label}>Modified:</span>
+            <span style={metaStyles.label}>修改：</span>
             <span style={metaStyles.value}>{modifiedDate}</span>
           </div>
         </>
       )}
       <div style={metaStyles.spacer} />
       <div style={metaStyles.group}>
-        <span style={metaStyles.label}>Links:</span>
+        <span style={metaStyles.label}>链接：</span>
         <span style={metaStyles.value}>
-          In: {backlinksCount} · Out: {outgoingLinkCount}
+          入链：{backlinksCount} · 出链：{outgoingLinkCount}
         </span>
       </div>
     </div>
@@ -846,6 +1050,60 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     height: "100%",
   },
+  emptyState: {
+    flex: 1,
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "12px",
+    textAlign: "center",
+    color: "var(--text-secondary)",
+    border: "1px dashed var(--border-muted)",
+    borderRadius: "8px",
+    backgroundColor: "var(--bg-secondary)",
+    padding: "32px",
+  },
+  emptyIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "48px",
+    height: "48px",
+    borderRadius: "8px",
+    color: "var(--text-muted)",
+    backgroundColor: "var(--bg-input)",
+  },
+  emptyTitle: {
+    color: "var(--text-primary)",
+    fontSize: "15px",
+    fontWeight: 600,
+  },
+  emptyBody: {
+    maxWidth: "360px",
+    color: "var(--text-muted)",
+    fontSize: "13px",
+    lineHeight: 1.6,
+  },
+  emptyPrimaryBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "6px",
+    minHeight: "32px",
+    padding: "0 12px",
+    border: "1px solid var(--control-border-strong)",
+    borderRadius: "4px",
+    backgroundColor: "var(--bg-input)",
+    color: "var(--text-primary)",
+    cursor: "pointer",
+    fontSize: "13px",
+  },
+  emptyPrimaryBtnDisabled: {
+    opacity: 0.55,
+    cursor: "not-allowed",
+  },
   toolbar: {
     display: "flex",
     justifyContent: "space-between",
@@ -867,6 +1125,15 @@ const styles: Record<string, React.CSSProperties> = {
   dirtyMark: {
     color: "var(--diff-warn)",
     fontSize: "14px",
+  },
+  readOnlyBadge: {
+    padding: "2px 6px",
+    border: "1px solid var(--border-color)",
+    borderRadius: "999px",
+    color: "var(--text-muted)",
+    backgroundColor: "var(--bg-input)",
+    fontSize: "11px",
+    lineHeight: 1,
   },
   toolbarRight: {
     display: "flex",

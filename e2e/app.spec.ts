@@ -38,7 +38,7 @@ test.describe("Dual-Track Note IDE — E2E Tests", () => {
     await page.keyboard.type("Hello world! This is a test note.");
 
     // Word count should update
-    const wordCount = page.getByText(/words/);
+    const wordCount = page.getByText(/\d+\s*词/);
     await expect(wordCount).toBeVisible();
   });
 
@@ -74,17 +74,47 @@ test.describe("Dual-Track Note IDE — E2E Tests", () => {
   });
 
   test("tab navigation works", async ({ page }) => {
-    // Click Graph tab (icon button with title)
-    await page.locator('button[title="Graph"]').click();
+    // Click Graph tab on the AI face.
+    await page.locator('button[aria-controls="panel-graph"]').click();
 
-    // Graph canvas should appear
-    const canvas = page.locator("canvas");
-    await expect(canvas).toBeVisible();
+    // Graph panel should appear.
+    await expect(page.locator("#panel-graph")).toBeVisible();
+    await expect(page.getByText("AI Manager 知识图谱")).toBeVisible();
 
-    // Switch to Diff tab
-    await page.locator('button[title="Diff"]').click();
+    // Diff Review lives on the human face.
+    await page.locator('button[aria-label="切换到人类面"]').click();
+    await page.locator('button[aria-controls="panel-diff"]').click();
 
-    // Diff view should load
-    await expect(page.getByText("Pending")).toBeVisible();
+    // Diff view should load.
+    await expect(page.locator("#panel-diff")).toBeVisible();
+    await expect(page.getByText("浏览器预览无法读取真实差异")).toBeVisible();
+  });
+
+  test("human mock task review produces and accepts a diff", async ({ page }) => {
+    const humanMode = "\u5207\u6362\u5230\u4eba\u7c7b\u9762";
+    const feedSuccessLoop = "\u6295\u5582\u6210\u529f\u95ed\u73af";
+    const viewDiff = "\u67e5\u770b Diff";
+    const collapseClaim = "\u5c40\u90e8\u4eff\u5c04\u574d\u7f29";
+    const history = "\u5386\u53f2";
+    const accepted = "\u5df2\u63a5\u53d7";
+
+    await page.locator(`button[aria-label="${humanMode}"]`).click();
+    await page.locator('button[aria-controls="panel-task-intake"]').click();
+    await page.getByRole("button", { name: feedSuccessLoop }).click();
+
+    await page.locator(`button[aria-label="${humanMode}"]`).click();
+    await page.locator('button[aria-controls="panel-bridge"]').click();
+
+    await expect(page.getByText(/96%/).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: viewDiff }).first()).toBeVisible();
+    await page.getByRole("button", { name: viewDiff }).first().click();
+
+    await expect(page.locator("#panel-diff")).toBeVisible();
+    await expect(page.getByText(new RegExp(collapseClaim))).toBeVisible();
+    await page.locator(".diff-block-card .diff-accept-btn").click();
+
+    await page.getByRole("button", { name: new RegExp(history) }).click();
+    await expect(page.getByText(accepted)).toBeVisible();
+    await expect(page.getByText(new RegExp(collapseClaim))).toBeVisible();
   });
 });

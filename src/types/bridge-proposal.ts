@@ -38,9 +38,11 @@ export type BridgeProposalStatus = "pending" | "approved" | "rejected" | "applie
 
 export type ProposalActionKind =
   | "approve_task"
+  | "approve_workflow_patch"
   | "open_diff"
   | "open_trace"
   | "apply_ghost"
+  | "reject_workflow_patch"
   | "reject"
   | "archive";
 

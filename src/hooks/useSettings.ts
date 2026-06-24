@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type Language = "zh" | "en";
-export type ThemeName = "feroha" | "mocha" | "macchiato" | "frappe" | "latte";
+export type ThemeName = "feroha" | "classic" | "macchiato" | "frappe" | "latte";
 export type LLMProvider = "gemini" | "openai" | "deepseek" | "anthropic" | "ollama";
 export type EmbeddingProvider = "gemini" | "openai" | "none";
 export type EditorViewMode = "edit" | "preview";
@@ -19,6 +19,21 @@ export interface Settings {
   embeddingProvider: EmbeddingProvider;
   embeddingApiKey: string;
   ollamaBaseUrl: string;
+}
+
+export interface ApiDebugSuccessDetail {
+  provider: string;
+  model: string;
+  latencyMs: number;
+}
+
+export interface ApiDebugResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  latency_ms?: number;
+  message?: string;
+  error?: string;
 }
 
 interface SettingsStore {
@@ -44,7 +59,10 @@ const DEFAULT_SETTINGS: Settings = {
 function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem("bayesian-settings");
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Settings>;
+      return { ...DEFAULT_SETTINGS, ...parsed, theme: normalizeTheme(parsed.theme) };
+    }
   } catch {
     // corrupted storage — fall back to defaults
   }
@@ -78,18 +96,63 @@ function backendConfigToSettingsPatch(config: Record<string, unknown>): Partial<
   if (typeof config.llm_model === "string") patch.llmModel = config.llm_model;
   if (typeof config.embedding_provider === "string") patch.embeddingProvider = config.embedding_provider as EmbeddingProvider;
   if (typeof config.embedding_api_key === "string") patch.embeddingApiKey = config.embedding_api_key;
-  if (typeof config.theme === "string" && isThemeName(config.theme)) patch.theme = config.theme;
+  if (typeof config.theme === "string") patch.theme = normalizeTheme(config.theme);
   return patch;
 }
 
+export function shouldAutoDebugApiPatch(patch: Partial<Settings>): boolean {
+  return Boolean(
+    patch.llmProvider !== undefined ||
+    patch.llmApiKey !== undefined ||
+    patch.llmModel !== undefined ||
+    patch.ollamaBaseUrl !== undefined
+  );
+}
+
+export function emitApiDebugSuccessEffect(detail: ApiDebugSuccessDetail): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<ApiDebugSuccessDetail>("feroha:api-debug-success", {
+      detail: {
+        provider: detail.provider,
+        model: detail.model,
+        latencyMs: detail.latencyMs,
+      },
+    })
+  );
+}
+
 function isThemeName(value: string): value is ThemeName {
-  return ["feroha", "mocha", "macchiato", "frappe", "latte"].includes(value);
+  return ["feroha", "classic", "macchiato", "frappe", "latte"].includes(value);
+}
+
+function normalizeTheme(value: unknown): ThemeName {
+  if (value === "mocha") return "classic";
+  if (typeof value === "string" && isThemeName(value)) return value;
+  return DEFAULT_SETTINGS.theme;
+}
+
+export async function saveSettingsToBackend(settings: Settings): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_config", { config: settingsToBackendConfig(settings) });
+}
+
+export async function saveAndDebugApiSettings(settings: Settings): Promise<ApiDebugResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_config", { config: settingsToBackendConfig(settings) });
+  const result = await invoke<ApiDebugResult>("debug_llm_config");
+  if (result.ok) {
+    emitApiDebugSuccessEffect({
+      provider: result.provider,
+      model: result.model,
+      latencyMs: result.latency_ms ?? 0,
+    });
+  }
+  return result;
 }
 
 function syncToBackend(settings: Settings) {
-  import("@tauri-apps/api/core").then(({ invoke }) => {
-    invoke("set_config", { config: settingsToBackendConfig(settings) }).catch(() => {});
-  }).catch(() => {});
+  saveSettingsToBackend(settings).catch(() => {});
 }
 
 export async function loadSettingsFromBackend(): Promise<void> {

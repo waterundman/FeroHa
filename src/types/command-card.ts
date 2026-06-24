@@ -13,6 +13,7 @@ export type CommandType =
   | "analyze"
   | "search"
   | "summarize"
+  | "verify"
   | "organize"
   | "connect"
   | "dream"

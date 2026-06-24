@@ -1,0 +1,22 @@
+{
+  "card_id": null,
+  "card_type": null,
+  "intent": "/agent research 分析 seed 笔记的桌面通路验证",
+  "ghost_ids": [],
+  "feedback_summary": null,
+  "phase_timings": {
+    "synthesize_ms": 5299,
+    "retrieve_ms": 7
+  },
+  "retrieval_evidence": [
+    {
+      "source": "local_vector",
+      "entries": [],
+      "hop": 0,
+      "generated_keywords": [
+        "/agent research 分析 seed 笔记的桌面通路验证"
+      ],
+      "total_found": 0
+    }
+  ]
+}

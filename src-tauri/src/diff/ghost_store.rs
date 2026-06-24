@@ -2,10 +2,10 @@
 // Ghost notes are NOT written to user files until explicitly accepted via merge
 
 use crate::harness::context::{ContextDiff, ContextFragment};
-use crate::harness::lean_kernel::VerificationResult;
+use crate::harness::proposition_kernel::{PropositionGraph, PropositionKernel, VerificationResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhostNote {
@@ -128,6 +128,7 @@ impl GhostStore {
         suggested_blocks: Vec<GhostBlock>,
         task_id: Option<String>,
     ) -> Result<GhostNote, String> {
+        let source_note = normalize_ghost_source_note(source_note)?;
         let id = format!(
             "ghost_{}",
             uuid::Uuid::new_v4().to_string().replace('-', "")
@@ -135,7 +136,7 @@ impl GhostStore {
         let ghost = GhostNote {
             id: id.clone(),
             task_id,
-            source_note: source_note.to_string(),
+            source_note,
             task_description: task_description.to_string(),
             suggested_blocks,
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -150,7 +151,7 @@ impl GhostStore {
             rejected_blocks: Vec::new(),
         };
 
-        let file_path = self.ghost_file_path(&id);
+        let file_path = self.ghost_file_path(&id)?;
         let dir = file_path.parent().unwrap();
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
@@ -162,6 +163,9 @@ impl GhostStore {
 
     /// List all ghost notes for a source file
     pub fn list_for_file(&self, source_note: &str) -> Vec<GhostNote> {
+        let Ok(source_note) = normalize_ghost_source_note(source_note) else {
+            return Vec::new();
+        };
         let mut ghosts = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.store_dir) {
             for entry in entries.flatten() {
@@ -220,7 +224,7 @@ impl GhostStore {
 
     /// Get a specific ghost note by ID
     pub fn get(&self, id: &str) -> Option<GhostNote> {
-        let file_path = self.ghost_file_path(id);
+        let file_path = self.ghost_file_path(id).ok()?;
         fs::read_to_string(&file_path)
             .ok()
             .and_then(|content| serde_json::from_str::<GhostNote>(&content).ok())
@@ -228,14 +232,14 @@ impl GhostStore {
 
     /// Save a ghost note back to its file
     pub fn save(&self, ghost: &GhostNote) -> Result<(), String> {
-        let file_path = self.ghost_file_path(&ghost.id);
+        let file_path = self.ghost_file_path(&ghost.id)?;
         let json = serde_json::to_string_pretty(ghost).map_err(|e| e.to_string())?;
         fs::write(&file_path, json).map_err(|e| e.to_string())
     }
 
     /// Update ghost status
     pub fn update_status(&self, id: &str, status: GhostStatus) -> Result<(), String> {
-        let file_path = self.ghost_file_path(id);
+        let file_path = self.ghost_file_path(id)?;
         let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
         let mut ghost: GhostNote = serde_json::from_str(&content).map_err(|e| e.to_string())?;
         ghost.status = status;
@@ -256,9 +260,9 @@ impl GhostStore {
     pub fn verify_ghost(
         &self,
         ghost_id: &str,
-        graph: &crate::harness::lean_kernel::PropositionGraph,
+        graph: &PropositionGraph,
     ) -> Result<VerificationResult, String> {
-        let result = crate::harness::lean_kernel::HybridLeanKernel::verify(graph);
+        let result = PropositionKernel::verify(graph);
         if let Some(mut ghost) = self.get(ghost_id) {
             let passed = result.passed;
             for block in &mut ghost.suggested_blocks {
@@ -268,7 +272,7 @@ impl GhostStore {
             if !passed {
                 ghost.status = GhostStatus::Blocked {
                     reason: format!(
-                        "Verification failed: {} violations",
+                        "Proposition consistency failed: {} violations",
                         result.violations.len()
                     ),
                 };
@@ -287,11 +291,18 @@ impl GhostStore {
     }
 
     pub fn detect_conflicts(&self, source_note: Option<&str>) -> Vec<ConflictReport> {
+        let source_note = match source_note {
+            Some(source) => match normalize_ghost_source_note(source) {
+                Ok(source) => Some(source),
+                Err(_) => return Vec::new(),
+            },
+            None => None,
+        };
         let all = self.list_all();
         let mut by_source: std::collections::HashMap<String, Vec<&GhostNote>> =
             std::collections::HashMap::new();
         for ghost in &all {
-            if let Some(filter) = source_note {
+            if let Some(filter) = source_note.as_deref() {
                 if ghost.source_note != filter {
                     continue;
                 }
@@ -352,14 +363,52 @@ impl GhostStore {
         reports
     }
 
-    fn ghost_file_path(&self, id: &str) -> PathBuf {
-        self.store_dir.join(format!("{}.json", id))
+    fn ghost_file_path(&self, id: &str) -> Result<PathBuf, String> {
+        validate_ghost_id(id)?;
+        Ok(self.store_dir.join(format!("{}.json", id)))
     }
+}
+
+fn validate_ghost_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("Invalid ghost id: empty".to_string());
+    }
+    if id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Ok(())
+    } else {
+        Err(format!("Invalid ghost id: {}", id))
+    }
+}
+
+fn normalize_ghost_source_note(source_note: &str) -> Result<String, String> {
+    let path = Path::new(source_note);
+    if source_note.trim().is_empty() || path.is_absolute() {
+        return Err(format!("Invalid ghost source note: {}", source_note));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            _ => return Err(format!("Invalid ghost source note: {}", source_note)),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(format!("Invalid ghost source note: {}", source_note));
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_ghost_note_serialization() {
@@ -429,5 +478,63 @@ mod tests {
         assert_eq!(deserialized.action, "accept");
         assert_eq!(deserialized.block_ids.len(), 2);
         assert_eq!(deserialized.reason, Some("Looks good".to_string()));
+    }
+
+    #[test]
+    fn test_ghost_store_rejects_source_note_path_escape() {
+        let dir = TempDir::new().unwrap();
+        let store = GhostStore::new(dir.path());
+        store.init().unwrap();
+
+        let result = store.create("../outside.md", "escape", vec![], None);
+
+        assert!(result.is_err());
+        assert!(store.list_all().is_empty());
+    }
+
+    #[test]
+    fn test_ghost_store_rejects_unsafe_ghost_id() {
+        let dir = TempDir::new().unwrap();
+        let store = GhostStore::new(dir.path());
+        store.init().unwrap();
+
+        assert!(store.get("../outside").is_none());
+        assert!(store
+            .update_status("../outside", GhostStatus::Rejected)
+            .is_err());
+
+        let invalid = GhostNote {
+            id: "../outside".to_string(),
+            task_id: None,
+            source_note: "test.md".to_string(),
+            task_description: "Test task".to_string(),
+            suggested_blocks: vec![],
+            created_at: 1234567890,
+            status: GhostStatus::Pending,
+            priority: 50,
+            expires_at: None,
+            related_ghosts: vec![],
+            confidence: 0.7,
+            feedback_history: vec![],
+            accepted_blocks: vec![],
+            rejected_blocks: vec![],
+        };
+        assert!(store.save(&invalid).is_err());
+        assert!(!dir.path().join("outside.json").exists());
+    }
+
+    #[test]
+    fn test_ghost_store_normalizes_source_note() {
+        let dir = TempDir::new().unwrap();
+        let store = GhostStore::new(dir.path());
+        store.init().unwrap();
+
+        let ghost = store
+            .create("folder/./test.md", "Test task", vec![], None)
+            .unwrap();
+
+        assert_eq!(ghost.source_note, "folder/test.md");
+        assert_eq!(store.list_for_file("folder/test.md").len(), 1);
+        assert_eq!(store.list_for_file("folder/./test.md").len(), 1);
     }
 }

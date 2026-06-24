@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::ai::llm_router::LlmRouter;
 use crate::ai::sandbox::{NetworkPolicy, SandboxPolicy};
 use crate::ai::subagent::Subagent;
+use crate::ai::vectordb::VectorStore;
 use crate::diff::ghost_store::{GhostBlock, GhostOp};
 use crate::AiState;
 use crate::AppState;
@@ -90,6 +92,40 @@ impl ToolRegistry {
         tool_allowed && tool_allowed_by_network_policy(name, &policy.network_policy)
     }
 
+    pub fn validate_tool_call_params(
+        &self,
+        name: &str,
+        params: &serde_json::Value,
+        policy: &SandboxPolicy,
+    ) -> Result<(), String> {
+        match name {
+            "summarize" => {
+                let target = params["target"].as_str().unwrap_or("");
+                if target.is_empty() || policy.allows_read(Path::new(target)) {
+                    Ok(())
+                } else {
+                    Err(format!("Read blocked by sandbox policy: {}", target))
+                }
+            }
+            "ghost_write" => {
+                let target_note = normalize_vault_relative_tool_path(
+                    params["target_note"].as_str().unwrap_or("untitled.md"),
+                    "ghost_write target_note",
+                )?;
+                let ghost_path = Path::new(".dualtrack").join("ghosts").join(&target_note);
+                if policy.allows_write(&ghost_path) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Write blocked by sandbox policy: {}",
+                        ghost_path.display()
+                    ))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn build_tool_prompt(&self) -> String {
         let tool_jsons = self
             .tools
@@ -152,6 +188,28 @@ fn tool_allowed_by_network_policy(tool_name: &str, network_policy: &NetworkPolic
         "deep_research" => matches!(network_policy, NetworkPolicy::Allowed),
         _ => true,
     }
+}
+
+fn normalize_vault_relative_tool_path(value: &str, label: &str) -> Result<String, String> {
+    let path = Path::new(value);
+    if value.trim().is_empty() || path.is_absolute() {
+        return Err(format!("Invalid {}: {}", label, value));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            _ => return Err(format!("Invalid {}: {}", label, value)),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(format!("Invalid {}: {}", label, value));
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
 }
 
 pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
@@ -524,14 +582,17 @@ impl AgentTool for DeepResearchTool {
     ) -> Result<ToolResult, String> {
         let question = params["question"].as_str().unwrap_or("").to_string();
 
-        let (sub, dualtrack_dir) = {
+        let sub = {
             let ai = ai_state.lock().map_err(|e| e.to_string())?;
-            let sub = ai.subagent.as_ref().cloned();
-            let app = state.lock().map_err(|e| e.to_string())?;
-            let dualtrack_dir = app.dualtrack_dir.clone();
-            drop(app);
-            (sub, dualtrack_dir)
+            ai.subagent.as_ref().cloned()
         };
+        let (dualtrack_dir, vector_store_path) = {
+            let app = state.lock().map_err(|e| e.to_string())?;
+            (app.dualtrack_dir.clone(), app.vector_store_path.clone())
+        };
+        let vector_store = vector_store_path
+            .to_str()
+            .and_then(|path| VectorStore::open(path).ok());
 
         let sub = sub.unwrap_or_else(|| Subagent::new(None));
         let task_id = format!(
@@ -542,7 +603,7 @@ impl AgentTool for DeepResearchTool {
         match sub
             .execute_deep_research(
                 &question,
-                None,
+                vector_store.as_ref(),
                 Some(router.clone()),
                 &task_id,
                 &dualtrack_dir,
@@ -550,10 +611,15 @@ impl AgentTool for DeepResearchTool {
             )
             .await
         {
-            Ok((report, _ghost_ids)) => Ok(ToolResult {
+            Ok(outcome) => Ok(ToolResult {
                 tool_name: "deep_research".to_string(),
-                content: report,
-                metadata: serde_json::json!({"question": question, "task_id": task_id}),
+                content: outcome.report,
+                metadata: serde_json::json!({
+                    "question": question,
+                    "task_id": task_id,
+                    "research_graph": outcome.graph_artifacts,
+                    "ghost_ids": outcome.ghost_ids,
+                }),
             }),
             Err(e) => Ok(ToolResult {
                 tool_name: "deep_research".to_string(),
@@ -612,6 +678,8 @@ impl AgentTool for GhostWriteTool {
             .as_str()
             .unwrap_or("untitled.md")
             .to_string();
+        let target_note =
+            normalize_vault_relative_tool_path(&target_note, "ghost_write target_note")?;
 
         let blocks: Vec<GhostBlock> = content
             .split("\n\n")
@@ -698,5 +766,57 @@ mod sandbox_tests {
         let policy = SandboxPolicy::read_only(&["deep_research"]);
 
         assert!(registry.get_allowed("deep_research", &policy).is_err());
+    }
+
+    #[test]
+    fn registry_blocks_tool_params_outside_read_roots() {
+        let registry = create_default_registry();
+        let policy = SandboxPolicy {
+            read_roots: vec!["vault/notes".into()],
+            ..SandboxPolicy::read_only(&["summarize"])
+        };
+
+        assert!(registry
+            .validate_tool_call_params(
+                "summarize",
+                &serde_json::json!({"target": "vault/notes/source.md"}),
+                &policy,
+            )
+            .is_ok());
+        assert!(registry
+            .validate_tool_call_params(
+                "summarize",
+                &serde_json::json!({"target": "vault/secrets.md"}),
+                &policy,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn registry_blocks_ghost_write_target_path_escape() {
+        let registry = create_default_registry();
+        let policy = crate::ai::task_intent::TaskIntentType::WriteProposal.default_sandbox_policy();
+
+        assert!(registry
+            .validate_tool_call_params(
+                "ghost_write",
+                &serde_json::json!({"target_note": "notes/result.md"}),
+                &policy,
+            )
+            .is_ok());
+        assert!(registry
+            .validate_tool_call_params(
+                "ghost_write",
+                &serde_json::json!({"target_note": "../outside.md"}),
+                &policy,
+            )
+            .is_err());
+        assert!(registry
+            .validate_tool_call_params(
+                "ghost_write",
+                &serde_json::json!({"target_note": "notes/../outside.md"}),
+                &policy,
+            )
+            .is_err());
     }
 }

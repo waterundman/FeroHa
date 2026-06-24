@@ -7,16 +7,24 @@ interface FeroHaIconProps {
   className?: string;
 }
 
+const iconAliases: Record<string, string> = {
+  HelpCircle: "CircleHelp",
+  BarChart3: "ChartBar",
+  Edit: "Pencil",
+};
+
 export default function FeroHaIcon({ name, size = 20, className = "" }: FeroHaIconProps) {
   const normalized = name.charAt(0).toUpperCase() + name.slice(1).replace(/[^a-zA-Z0-9]/g, "");
+  const iconName = iconAliases[normalized] ?? normalized;
 
-  const IconComponent = (icons as Record<string, React.ComponentType<LucideProps>>)[normalized];
+  const IconComponent = (icons as Record<string, React.ComponentType<LucideProps>>)[iconName];
 
   if (!IconComponent) {
     console.warn(`FeroHaIcon: icon "${name}" (→"${normalized}") not found in lucide-react`);
     return (
       <span
         className={`feroha-icon ${className}`}
+        aria-hidden="true"
         style={{
           display: "inline-flex",
           width: size,
@@ -32,6 +40,7 @@ export default function FeroHaIcon({ name, size = 20, className = "" }: FeroHaIc
   return (
     <span
       className={`feroha-icon ${className}`}
+      aria-hidden="true"
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -40,17 +49,6 @@ export default function FeroHaIcon({ name, size = 20, className = "" }: FeroHaIc
         height: size,
       }}
     >
-      <style>{`
-        .feroha-icon svg {
-          stroke: var(--icon-default);
-          transition: all var(--transition-normal) var(--easing-smooth);
-        }
-        .feroha-icon:hover svg {
-          stroke: var(--icon-hover);
-          filter: drop-shadow(0 0 8px rgba(42, 224, 154, 0.6));
-          transform: scale(1.05);
-        }
-      `}</style>
       <IconComponent size={size} strokeWidth={1.5} />
     </span>
   );

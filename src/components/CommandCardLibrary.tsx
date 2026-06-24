@@ -6,7 +6,10 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import FeroHaIcon from "./FeroHaIcon";
+import CommandCardLibraryItem from "./CommandCardLibraryItem";
+import CommandCardPreview from "./CommandCardPreview";
 import { useCommandCardStore } from "../store/commandCardStore";
+import { useSettingsStore } from "../hooks/useSettings";
 import type {
   CommandCardDefinition,
   CommandCategory,
@@ -37,6 +40,10 @@ interface CardFormData {
   tags: string[];
   template: string;
   params: ParamDefinition[];
+}
+
+export function commandCardLibraryChromeClass(mode: CommandCardLibraryProps["mode"] = "browse"): string {
+  return `command-card-library ${mode === "manage" ? "embedded" : "modal"}`;
 }
 
 // ============================================================================
@@ -96,6 +103,7 @@ export default function CommandCardLibrary({
     addSearchHistory,
     clearSearchHistory,
   } = useCommandCardStore();
+  const llmReady = useSettingsStore((s) => s.settings.llmProvider === "ollama" || s.settings.llmApiKey.trim().length > 0);
 
   // State
   const [searchQuery, setSearchQuery] = useState("");
@@ -105,6 +113,8 @@ export default function CommandCardLibrary({
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [showCustomOnly, setShowCustomOnly] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedPreviewCard, setSelectedPreviewCard] = useState<CommandCardDefinition | null>(null);
+  const [previewMessage, setPreviewMessage] = useState("");
 
   // Editor state
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -209,10 +219,24 @@ export default function CommandCardLibrary({
       if (mode === "select" && onSelect) {
         onSelect(card);
         onClose();
+        return;
       }
+      setSelectedPreviewCard(card);
+      setPreviewMessage("");
     },
     [mode, onSelect, onClose]
   );
+
+  const handleUsePreviewCard = useCallback(() => {
+    if (!selectedPreviewCard) return;
+    if (onSelect) {
+      onSelect(selectedPreviewCard);
+      onClose();
+      return;
+    }
+    void navigator.clipboard?.writeText(selectedPreviewCard.prompt.template);
+    setPreviewMessage("Prompt template copied");
+  }, [selectedPreviewCard, onSelect, onClose]);
 
   const handleCreateCard = useCallback(() => {
     setEditingCard(null);
@@ -550,89 +574,18 @@ export default function CommandCardLibrary({
 
           <div className={`cards-grid ${viewMode}`}>
             {cards.map((card) => (
-              <div
+              <CommandCardLibraryItem
                 key={card.meta.id}
-                className={`card-item ${favorites.includes(card.meta.id) ? "favorite" : ""} ${
-                  card.meta.isCustom ? "custom" : ""
-                }`}
-                onClick={() => handleCardClick(card)}
-              >
-                <div className="card-header">
-                  <span className="card-icon"><FeroHaIcon name={card.meta.icon} size={24} /></span>
-                  <div className="card-actions">
-                    <button
-                      className={`action-btn favorite-btn ${
-                        favorites.includes(card.meta.id) ? "active" : ""
-                      }`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleFavorite(card.meta.id);
-                      }}
-                      title={favorites.includes(card.meta.id) ? "取消收藏" : "收藏"}
-                    >
-                      <FeroHaIcon name="Star" size={14} />
-                    </button>
-                    {card.meta.isCustom && (
-                      <>
-                        <button
-                          className="action-btn edit-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditCard(card);
-                          }}
-                          title="编辑"
-                        >
-                          <FeroHaIcon name="Pencil" size={14} />
-                        </button>
-                        <button
-                          className="action-btn delete-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteCard(card.meta.id);
-                          }}
-                          title="删除"
-                        >
-                          <FeroHaIcon name="X" size={14} />
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="action-btn duplicate-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDuplicateCard(card.meta.id);
-                      }}
-                      title="复制"
-                    >
-                      <FeroHaIcon name="Copy" size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="card-body">
-                  <h5 className="card-title">{card.meta.name}</h5>
-                  <p className="card-description">{card.meta.description}</p>
-                </div>
-
-                <div className="card-footer">
-                  <div className="card-tags">
-                    {card.meta.tags.slice(0, 3).map((tag) => (
-                      <span key={tag} className="card-tag">
-                        {tag}
-                      </span>
-                    ))}
-                    {card.meta.tags.length > 3 && (
-                      <span className="card-tag-more">+{card.meta.tags.length - 3}</span>
-                    )}
-                  </div>
-                  {card.meta.isCustom && <span className="custom-badge">自定义</span>}
-                </div>
-
-                <div className="card-meta">
-                  <span className="meta-version">v{card.meta.version}</span>
-                  {card.meta.author && <span className="meta-author">{card.meta.author}</span>}
-                </div>
-              </div>
+                card={card}
+                selected={selectedPreviewCard?.meta.id === card.meta.id}
+                favorite={favorites.includes(card.meta.id)}
+                llmReady={llmReady}
+                onOpen={handleCardClick}
+                onToggleFavorite={handleToggleFavorite}
+                onEdit={handleEditCard}
+                onDelete={handleDeleteCard}
+                onDuplicate={handleDuplicateCard}
+              />
             ))}
           </div>
         </div>
@@ -876,7 +829,7 @@ export default function CommandCardLibrary({
   if (!isOpen) return null;
 
   return (
-    <div className="command-card-library">
+    <div className={commandCardLibraryChromeClass(mode)}>
       <div className="library-overlay" onClick={onClose} />
       <div className="library-panel">
         <div className="library-header">
@@ -919,7 +872,16 @@ export default function CommandCardLibrary({
           {renderSearchBar()}
           {renderFilters()}
           {renderTags()}
-          {renderCardGrid()}
+          <div className="library-main">
+            {renderCardGrid()}
+            <CommandCardPreview
+              card={selectedPreviewCard}
+              llmReady={llmReady}
+              useLabel={onSelect ? "Use card" : "Copy template"}
+              message={previewMessage}
+              onUse={handleUsePreviewCard}
+            />
+          </div>
         </div>
 
         {renderEditor()}
@@ -938,6 +900,17 @@ export default function CommandCardLibrary({
           justify-content: center;
         }
 
+        .command-card-library.embedded {
+          position: relative;
+          inset: auto;
+          z-index: auto;
+          width: 100%;
+          height: 100%;
+          align-items: stretch;
+          justify-content: stretch;
+          background: var(--bg-primary);
+        }
+
         .library-overlay {
           position: absolute;
           top: 0;
@@ -948,18 +921,32 @@ export default function CommandCardLibrary({
           backdrop-filter: blur(4px);
         }
 
+        .command-card-library.embedded .library-overlay {
+          display: none;
+        }
+
         .library-panel {
           position: relative;
-          background: #1e1e2e;
-          border-radius: 12px;
+          background: var(--bg-secondary);
+          border-radius: 8px;
           width: 90%;
           max-width: 1200px;
           height: 85vh;
           display: flex;
           flex-direction: column;
           box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-          border: 1px solid #313244;
+          border: 1px solid var(--border-color);
           animation: librarySlideIn 0.3s ease;
+        }
+
+        .command-card-library.embedded .library-panel {
+          width: 100%;
+          max-width: none;
+          height: 100%;
+          border-radius: 0;
+          border: 0;
+          box-shadow: none;
+          animation: none;
         }
 
         @keyframes librarySlideIn {
@@ -978,7 +965,8 @@ export default function CommandCardLibrary({
           justify-content: space-between;
           align-items: center;
           padding: 16px 24px;
-          border-bottom: 1px solid #313244;
+          border-bottom: 1px solid var(--border-color);
+          background: var(--bg-primary);
         }
 
         .header-left {
@@ -991,14 +979,14 @@ export default function CommandCardLibrary({
           margin: 0;
           font-size: 20px;
           font-weight: 600;
-          color: #cdd6f4;
+          color: var(--text-primary);
         }
 
         .card-count {
           font-size: 14px;
-          color: #6c7086;
+          color: var(--text-muted);
           padding: 4px 8px;
-          background: #313244;
+          background: var(--bg-input);
           border-radius: 6px;
         }
 
@@ -1022,29 +1010,32 @@ export default function CommandCardLibrary({
         }
 
         .create-btn {
-          background: #89b4fa;
-          color: #1e1e2e;
+          background: var(--accent-primary);
+          color: var(--bg-primary);
         }
 
         .create-btn:hover {
-          background: #74c7ec;
+          background: var(--accent-primary);
+          box-shadow: 0 0 12px var(--accent-glow);
         }
 
         .export-btn,
         .import-btn {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-input);
+          color: var(--text-secondary);
+          border: 1px solid var(--border-color);
         }
 
         .export-btn:hover,
         .import-btn:hover {
-          background: #585b70;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .close-btn {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           font-size: 18px;
           cursor: pointer;
           padding: 8px;
@@ -1053,8 +1044,8 @@ export default function CommandCardLibrary({
         }
 
         .close-btn:hover {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .library-content {
@@ -1064,9 +1055,160 @@ export default function CommandCardLibrary({
           overflow: hidden;
         }
 
+        .library-main {
+          flex: 1;
+          min-height: 0;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+          overflow: hidden;
+        }
+
+        .command-card-preview {
+          border-left: 1px solid var(--border-color);
+          background: var(--bg-primary);
+          padding: 16px;
+          overflow: auto;
+          color: var(--text-secondary);
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+
+        .command-card-preview.empty {
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          color: var(--text-muted);
+          padding: 24px;
+        }
+
+        .preview-header {
+          display: flex;
+          gap: 10px;
+          align-items: flex-start;
+        }
+
+        .preview-icon {
+          color: var(--accent-primary);
+          flex: 0 0 auto;
+        }
+
+        .preview-header h3 {
+          margin: 0 0 4px 0;
+          color: var(--text-primary);
+          font-size: 16px;
+        }
+
+        .preview-header p,
+        .command-card-preview.empty p {
+          margin: 0;
+          font-size: 12px;
+          line-height: 1.5;
+        }
+
+        .preview-skill {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          font-size: 11px;
+          color: var(--text-muted);
+          padding: 8px;
+          border: 1px solid var(--border-color);
+          border-radius: 6px;
+          background: var(--bg-input);
+        }
+
+        .preview-skill strong {
+          color: var(--accent-primary);
+          font-weight: 600;
+        }
+
+        .preview-block {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .preview-label {
+          color: var(--text-muted);
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .preview-block pre {
+          margin: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: var(--text-primary);
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
+          border-radius: 6px;
+          padding: 10px;
+          font-size: 12px;
+          line-height: 1.45;
+          max-height: 220px;
+          overflow: auto;
+        }
+
+        .preview-block ul {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .preview-block li {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 7px 8px;
+          border: 1px solid var(--border-color);
+          border-radius: 6px;
+          background: var(--bg-input);
+          font-size: 12px;
+        }
+
+        .preview-block li strong {
+          color: var(--text-primary);
+          font-weight: 600;
+        }
+
+        .preview-muted {
+          margin: 0;
+          color: var(--text-muted);
+          font-size: 12px;
+        }
+
+        .preview-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: auto;
+        }
+
+        .use-preview-btn {
+          border: 0;
+          border-radius: 6px;
+          background: var(--accent-primary);
+          color: var(--bg-primary);
+          padding: 8px 12px;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .preview-message {
+          color: var(--accent-primary);
+          font-size: 12px;
+        }
+
         .search-section {
           padding: 16px 24px;
-          border-bottom: 1px solid #313244;
+          border-bottom: 1px solid var(--border-color);
         }
 
         .search-bar {
@@ -1074,19 +1216,19 @@ export default function CommandCardLibrary({
           align-items: center;
           gap: 8px;
           padding: 12px 16px;
-          background: #313244;
+          background: var(--bg-input);
           border-radius: 8px;
-          border: 1px solid #45475a;
+          border: 1px solid var(--border-color);
           transition: all 0.15s;
         }
 
         .search-bar:focus-within {
-          border-color: #89b4fa;
-          box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 2px var(--accent-glow);
         }
 
         .search-icon {
-          color: #6c7086;
+          color: var(--text-muted);
           font-size: 16px;
         }
 
@@ -1095,19 +1237,19 @@ export default function CommandCardLibrary({
           background: transparent;
           border: none;
           outline: none;
-          color: #cdd6f4;
+          color: var(--text-primary);
           font-size: 14px;
           font-family: inherit;
         }
 
         .search-input::placeholder {
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .clear-search {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           cursor: pointer;
           padding: 4px;
           border-radius: 4px;
@@ -1115,8 +1257,8 @@ export default function CommandCardLibrary({
         }
 
         .clear-search:hover {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .search-history {
@@ -1132,13 +1274,13 @@ export default function CommandCardLibrary({
 
         .history-label {
           font-size: 12px;
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .clear-history {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           cursor: pointer;
           font-size: 12px;
           padding: 2px 6px;
@@ -1146,8 +1288,8 @@ export default function CommandCardLibrary({
         }
 
         .clear-history:hover {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .history-tags {
@@ -1157,9 +1299,9 @@ export default function CommandCardLibrary({
         }
 
         .history-tag {
-          background: #313244;
-          border: none;
-          color: #a6adc8;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
+          color: var(--text-secondary);
           padding: 4px 8px;
           border-radius: 4px;
           cursor: pointer;
@@ -1168,17 +1310,18 @@ export default function CommandCardLibrary({
         }
 
         .history-tag:hover {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .filters-section {
           padding: 12px 24px;
-          border-bottom: 1px solid #313244;
+          border-bottom: 1px solid var(--border-color);
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 16px;
+          flex-wrap: wrap;
         }
 
         .category-tabs {
@@ -1190,7 +1333,7 @@ export default function CommandCardLibrary({
         .category-tab {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           padding: 8px 12px;
           border-radius: 6px;
           cursor: pointer;
@@ -1203,13 +1346,13 @@ export default function CommandCardLibrary({
         }
 
         .category-tab:hover {
-          background: #313244;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .category-tab.active {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-input);
+          color: var(--accent-primary);
         }
 
         .tab-icon {
@@ -1220,11 +1363,13 @@ export default function CommandCardLibrary({
           display: flex;
           align-items: center;
           gap: 12px;
+          flex-wrap: wrap;
         }
 
         .view-toggle {
           display: flex;
-          background: #313244;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
           border-radius: 6px;
           overflow: hidden;
         }
@@ -1232,7 +1377,7 @@ export default function CommandCardLibrary({
         .view-btn {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           padding: 8px 12px;
           cursor: pointer;
           font-size: 14px;
@@ -1240,18 +1385,18 @@ export default function CommandCardLibrary({
         }
 
         .view-btn:hover {
-          color: #cdd6f4;
+          color: var(--text-primary);
         }
 
         .view-btn.active {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--accent-secondary);
+          color: var(--accent-primary);
         }
 
         .sort-select {
-          background: #313244;
-          border: 1px solid #45475a;
-          color: #cdd6f4;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
+          color: var(--text-primary);
           padding: 8px 12px;
           border-radius: 6px;
           font-size: 13px;
@@ -1260,25 +1405,25 @@ export default function CommandCardLibrary({
 
         .sort-select:focus {
           outline: none;
-          border-color: #89b4fa;
+          border-color: var(--accent-primary);
         }
 
         .custom-only-toggle {
           display: flex;
           align-items: center;
           gap: 6px;
-          color: #a6adc8;
+          color: var(--text-secondary);
           font-size: 13px;
           cursor: pointer;
         }
 
         .custom-only-toggle input {
-          accent-color: #89b4fa;
+          accent-color: var(--accent-primary);
         }
 
         .tags-section {
           padding: 12px 24px;
-          border-bottom: 1px solid #313244;
+          border-bottom: 1px solid var(--border-color);
         }
 
         .tags-scroll {
@@ -1288,9 +1433,9 @@ export default function CommandCardLibrary({
         }
 
         .tag-btn {
-          background: #313244;
-          border: none;
-          color: #a6adc8;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
+          color: var(--text-secondary);
           padding: 6px 10px;
           border-radius: 4px;
           cursor: pointer;
@@ -1299,13 +1444,13 @@ export default function CommandCardLibrary({
         }
 
         .tag-btn:hover {
-          background: #45475a;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .tag-btn.active {
-          background: #89b4fa;
-          color: #1e1e2e;
+          background: var(--accent-primary);
+          color: var(--bg-primary);
         }
 
         .cards-container {
@@ -1322,7 +1467,7 @@ export default function CommandCardLibrary({
           margin: 0 0 12px 0;
           font-size: 14px;
           font-weight: 600;
-          color: #a6adc8;
+          color: var(--text-secondary);
           display: flex;
           align-items: center;
           gap: 8px;
@@ -1336,7 +1481,7 @@ export default function CommandCardLibrary({
 
         .category-count {
           font-size: 12px;
-          color: #6c7086;
+          color: var(--text-muted);
           font-weight: normal;
         }
 
@@ -1354,27 +1499,33 @@ export default function CommandCardLibrary({
         }
 
         .card-item {
-          background: #313244;
+          background: var(--bg-input);
           border-radius: 8px;
           padding: 16px;
           cursor: pointer;
           transition: all 0.2s ease;
-          border: 2px solid transparent;
+          border: 1px solid var(--border-color);
           position: relative;
         }
 
         .card-item:hover {
-          background: #45475a;
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+          background: var(--bg-hover);
+          border-color: var(--accent-primary);
+          transform: translateY(-1px);
+          box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
+        }
+
+        .card-item.selected {
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 1px var(--accent-primary), 0 8px 18px rgba(0, 0, 0, 0.25);
         }
 
         .card-item.favorite {
-          border-color: #f9e2af;
+          border-color: var(--diff-warn);
         }
 
         .card-item.custom {
-          border-left: 3px solid #a6e3a1;
+          border-left: 3px solid var(--accent-primary);
         }
 
         .card-header {
@@ -1403,7 +1554,7 @@ export default function CommandCardLibrary({
         .action-btn {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           cursor: pointer;
           padding: 4px 6px;
           border-radius: 4px;
@@ -1412,20 +1563,20 @@ export default function CommandCardLibrary({
         }
 
         .action-btn:hover {
-          background: #585b70;
-          color: #cdd6f4;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .favorite-btn.active {
-          color: #f9e2af;
+          color: var(--diff-warn);
         }
 
         .edit-btn:hover {
-          color: #89b4fa;
+          color: var(--accent-primary);
         }
 
         .delete-btn:hover {
-          color: #f38ba8;
+          color: var(--diff-delete);
         }
 
         .card-body {
@@ -1436,18 +1587,53 @@ export default function CommandCardLibrary({
           margin: 0 0 6px 0;
           font-size: 15px;
           font-weight: 600;
-          color: #cdd6f4;
+          color: var(--text-primary);
         }
 
         .card-description {
           margin: 0;
           font-size: 12px;
-          color: #a6adc8;
+          color: var(--text-secondary);
           line-height: 1.5;
           display: -webkit-box;
           -webkit-line-clamp: 2;
           -webkit-box-orient: vertical;
           overflow: hidden;
+        }
+
+        .card-skill-line {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 8px;
+          color: var(--text-muted);
+          font-size: 10px;
+          line-height: 1.3;
+          min-width: 0;
+        }
+
+        .card-skill-line span:nth-child(2) {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .card-skill-line span:nth-child(3) {
+          flex: 0 0 auto;
+          color: var(--accent-primary);
+        }
+
+        .card-skill-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--accent-primary);
+          flex: 0 0 auto;
+        }
+
+        .card-skill-dot.needs-api {
+          background: var(--diff-warn);
         }
 
         .card-footer {
@@ -1466,23 +1652,23 @@ export default function CommandCardLibrary({
         .card-tag {
           font-size: 10px;
           padding: 2px 6px;
-          background: #45475a;
+          background: var(--bg-secondary);
           border-radius: 4px;
-          color: #a6adc8;
+          color: var(--text-secondary);
         }
 
         .card-tag-more {
           font-size: 10px;
           padding: 2px 6px;
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .custom-badge {
           font-size: 10px;
           padding: 2px 6px;
-          background: #a6e3a1;
+          background: var(--accent-primary);
           border-radius: 4px;
-          color: #1e1e2e;
+          color: var(--bg-primary);
           font-weight: 600;
         }
 
@@ -1491,7 +1677,7 @@ export default function CommandCardLibrary({
           justify-content: space-between;
           align-items: center;
           font-size: 11px;
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .meta-version {
@@ -1504,7 +1690,7 @@ export default function CommandCardLibrary({
           align-items: center;
           justify-content: center;
           padding: 60px 20px;
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .no-results-icon {
@@ -1515,7 +1701,7 @@ export default function CommandCardLibrary({
         .no-results-text {
           margin: 0 0 8px 0;
           font-size: 16px;
-          color: #a6adc8;
+          color: var(--text-secondary);
         }
 
         .no-results-hint {
@@ -1538,15 +1724,15 @@ export default function CommandCardLibrary({
         }
 
         .editor-panel {
-          background: #1e1e2e;
-          border-radius: 12px;
+          background: var(--bg-secondary);
+          border-radius: 8px;
           width: 90%;
           max-width: 600px;
           max-height: 90%;
           display: flex;
           flex-direction: column;
           box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-          border: 1px solid #313244;
+          border: 1px solid var(--border-color);
         }
 
         .editor-header {
@@ -1554,14 +1740,14 @@ export default function CommandCardLibrary({
           justify-content: space-between;
           align-items: center;
           padding: 16px 24px;
-          border-bottom: 1px solid #313244;
+          border-bottom: 1px solid var(--border-color);
         }
 
         .editor-header h3 {
           margin: 0;
           font-size: 18px;
           font-weight: 600;
-          color: #cdd6f4;
+          color: var(--text-primary);
         }
 
         .editor-content {
@@ -1573,14 +1759,14 @@ export default function CommandCardLibrary({
         .form-errors {
           margin-bottom: 16px;
           padding: 12px;
-          background: #f38ba820;
-          border: 1px solid #f38ba8;
+          background: rgba(243, 139, 168, 0.12);
+          border: 1px solid var(--diff-delete);
           border-radius: 6px;
         }
 
         .error-message {
           margin: 0 0 4px 0;
-          color: #f38ba8;
+          color: var(--diff-delete);
           font-size: 13px;
         }
 
@@ -1597,7 +1783,7 @@ export default function CommandCardLibrary({
           margin-bottom: 6px;
           font-size: 13px;
           font-weight: 500;
-          color: #a6adc8;
+          color: var(--text-secondary);
         }
 
         .form-input,
@@ -1605,10 +1791,10 @@ export default function CommandCardLibrary({
         .form-select {
           width: 100%;
           padding: 10px 12px;
-          background: #313244;
-          border: 1px solid #45475a;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
           border-radius: 6px;
-          color: #cdd6f4;
+          color: var(--text-primary);
           font-size: 14px;
           font-family: inherit;
           transition: all 0.15s;
@@ -1619,13 +1805,13 @@ export default function CommandCardLibrary({
         .form-textarea:focus,
         .form-select:focus {
           outline: none;
-          border-color: #89b4fa;
-          box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 2px var(--accent-glow);
         }
 
         .form-input::placeholder,
         .form-textarea::placeholder {
-          color: #45475a;
+          color: var(--text-muted);
         }
 
         .form-textarea {
@@ -1641,7 +1827,7 @@ export default function CommandCardLibrary({
         .form-hint {
           margin: 6px 0 0 0;
           font-size: 12px;
-          color: #6c7086;
+          color: var(--text-muted);
         }
 
         .form-row {
@@ -1664,15 +1850,15 @@ export default function CommandCardLibrary({
           flex-wrap: wrap;
           gap: 6px;
           padding: 8px;
-          background: #313244;
-          border: 1px solid #45475a;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
           border-radius: 6px;
           min-height: 40px;
         }
 
         .tags-input:focus-within {
-          border-color: #89b4fa;
-          box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 2px var(--accent-glow);
         }
 
         .tag-item {
@@ -1680,16 +1866,16 @@ export default function CommandCardLibrary({
           align-items: center;
           gap: 4px;
           padding: 4px 8px;
-          background: #45475a;
+          background: var(--bg-secondary);
           border-radius: 4px;
-          color: #cdd6f4;
+          color: var(--text-primary);
           font-size: 12px;
         }
 
         .tag-remove {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           cursor: pointer;
           padding: 0;
           font-size: 10px;
@@ -1697,7 +1883,7 @@ export default function CommandCardLibrary({
         }
 
         .tag-remove:hover {
-          color: #f38ba8;
+          color: var(--diff-delete);
         }
 
         .tag-input {
@@ -1706,13 +1892,13 @@ export default function CommandCardLibrary({
           background: transparent;
           border: none;
           outline: none;
-          color: #cdd6f4;
+          color: var(--text-primary);
           font-size: 12px;
           font-family: inherit;
         }
 
         .tag-input::placeholder {
-          color: #45475a;
+          color: var(--text-muted);
         }
 
         .params-header {
@@ -1723,9 +1909,9 @@ export default function CommandCardLibrary({
         }
 
         .add-param-btn {
-          background: #45475a;
-          border: none;
-          color: #89b4fa;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
+          color: var(--accent-primary);
           padding: 6px 10px;
           border-radius: 4px;
           cursor: pointer;
@@ -1734,11 +1920,11 @@ export default function CommandCardLibrary({
         }
 
         .add-param-btn:hover {
-          background: #585b70;
+          background: var(--bg-hover);
         }
 
         .no-params {
-          color: #6c7086;
+          color: var(--text-muted);
           font-size: 13px;
           font-style: italic;
         }
@@ -1750,7 +1936,8 @@ export default function CommandCardLibrary({
         }
 
         .param-item {
-          background: #313244;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
           border-radius: 6px;
           padding: 12px;
         }
@@ -1779,19 +1966,19 @@ export default function CommandCardLibrary({
           align-items: center;
           gap: 4px;
           font-size: 12px;
-          color: #a6adc8;
+          color: var(--text-secondary);
           cursor: pointer;
           white-space: nowrap;
         }
 
         .param-required input {
-          accent-color: #89b4fa;
+          accent-color: var(--accent-primary);
         }
 
         .remove-param-btn {
           background: transparent;
           border: none;
-          color: #6c7086;
+          color: var(--text-muted);
           cursor: pointer;
           padding: 4px 6px;
           border-radius: 4px;
@@ -1799,8 +1986,8 @@ export default function CommandCardLibrary({
         }
 
         .remove-param-btn:hover {
-          background: #45475a;
-          color: #f38ba8;
+          background: var(--bg-hover);
+          color: var(--diff-delete);
         }
 
         .param-placeholder {
@@ -1812,30 +1999,31 @@ export default function CommandCardLibrary({
           justify-content: flex-end;
           gap: 12px;
           padding: 16px 24px;
-          border-top: 1px solid #313244;
+          border-top: 1px solid var(--border-color);
         }
 
         .cancel-btn {
           padding: 10px 20px;
-          background: #45475a;
-          border: none;
+          background: var(--bg-input);
+          border: 1px solid var(--border-color);
           border-radius: 6px;
-          color: #cdd6f4;
+          color: var(--text-secondary);
           cursor: pointer;
           font-size: 14px;
           transition: all 0.15s;
         }
 
         .cancel-btn:hover {
-          background: #585b70;
+          background: var(--bg-hover);
+          color: var(--text-primary);
         }
 
         .save-btn {
           padding: 10px 20px;
-          background: #89b4fa;
+          background: var(--accent-primary);
           border: none;
           border-radius: 6px;
-          color: #1e1e2e;
+          color: var(--bg-primary);
           cursor: pointer;
           font-size: 14px;
           font-weight: 600;
@@ -1843,7 +2031,20 @@ export default function CommandCardLibrary({
         }
 
         .save-btn:hover {
-          background: #74c7ec;
+          background: var(--accent-primary);
+          box-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        @media (max-width: 860px) {
+          .library-main {
+            grid-template-columns: 1fr;
+          }
+
+          .command-card-preview {
+            border-left: 0;
+            border-top: 1px solid var(--border-color);
+            max-height: 38vh;
+          }
         }
       `}</style>
     </div>

@@ -8,6 +8,7 @@ interface EditorToolbarProps {
   onToggleViewMode?: () => void;
   onToggleLineWrap?: () => void;
   lineWrapActive?: boolean;
+  readOnly?: boolean;
 }
 
 function wrapSelection(view: EditorView, before: string, after: string) {
@@ -46,47 +47,47 @@ function insertAtEachLineStart(view: EditorView, text: string) {
 const buttons = [
   {
     icon: "Bold",
-    label: "Bold",
+    label: "加粗",
     action: (view: EditorView) => wrapSelection(view, "**", "**"),
   },
   {
     icon: "Italic",
-    label: "Italic",
+    label: "斜体",
     action: (view: EditorView) => wrapSelection(view, "*", "*"),
   },
   {
     icon: "Heading",
-    label: "Heading",
+    label: "标题",
     action: (view: EditorView) => insertAtLineStart(view, "## "),
   },
   {
     icon: "Link",
-    label: "Link",
+    label: "链接",
     action: (view: EditorView) => wrapSelection(view, "[", "](url)"),
   },
   {
     icon: "List",
-    label: "List",
+    label: "列表",
     action: (view: EditorView) => insertAtLineStart(view, "- "),
   },
   {
     icon: "Code",
-    label: "Code",
+    label: "代码",
     action: (view: EditorView) => wrapSelection(view, "`", "`"),
   },
   {
     icon: "Quote",
-    label: "Blockquote",
+    label: "引用",
     action: (view: EditorView) => insertAtEachLineStart(view, "> "),
   },
   {
     icon: "ListOrdered",
-    label: "Numbered List",
+    label: "有序列表",
     action: (view: EditorView) => insertAtEachLineStart(view, "1. "),
   },
   {
     icon: "Strikethrough",
-    label: "Strikethrough",
+    label: "删除线",
     action: (view: EditorView) => {
       const sel = view.state.selection.main;
       if (sel.empty) {
@@ -101,7 +102,7 @@ const buttons = [
   },
   {
     icon: "Image",
-    label: "Image",
+    label: "图片",
     action: (view: EditorView) => {
       const sel = view.state.selection.main;
       view.dispatch({
@@ -112,8 +113,16 @@ const buttons = [
   },
 ];
 
-export default function EditorToolbar({ viewRef, viewMode, onToggleViewMode, onToggleLineWrap, lineWrapActive }: EditorToolbarProps) {
+export default function EditorToolbar({
+  viewRef,
+  viewMode,
+  onToggleViewMode,
+  onToggleLineWrap,
+  lineWrapActive,
+  readOnly = false,
+}: EditorToolbarProps) {
   const handleClick = (action: (view: EditorView) => void) => {
+    if (readOnly) return;
     if (!viewRef.current) return;
     viewRef.current.focus();
     action(viewRef.current);
@@ -121,7 +130,7 @@ export default function EditorToolbar({ viewRef, viewMode, onToggleViewMode, onT
 
   return (
     <div style={styles.toolbar}>
-      {viewMode !== "preview" && buttons.map((btn) => (
+      {viewMode !== "preview" && !readOnly && buttons.map((btn) => (
         <button
           key={btn.icon}
           style={styles.btn}
@@ -135,8 +144,8 @@ export default function EditorToolbar({ viewRef, viewMode, onToggleViewMode, onT
       {viewMode !== "preview" && onToggleLineWrap && (
         <button
           style={lineWrapActive ? { ...styles.btn, color: "var(--accent-primary)" } : styles.btn}
-          title="Toggle line wrap"
-          aria-label="Toggle line wrap"
+          title="切换自动换行"
+          aria-label="切换自动换行"
           onClick={onToggleLineWrap}
         >
           <FeroHaIcon name="WrapText" size={16} />
@@ -145,8 +154,8 @@ export default function EditorToolbar({ viewRef, viewMode, onToggleViewMode, onT
       {onToggleViewMode && (
         <button
           style={{ ...styles.btn, marginLeft: "auto" }}
-          title={viewMode === "preview" ? "Edit mode" : "Preview mode"}
-          aria-label={viewMode === "preview" ? "Edit mode" : "Preview mode"}
+          title={viewMode === "preview" ? "编辑模式" : "预览模式"}
+          aria-label={viewMode === "preview" ? "编辑模式" : "预览模式"}
           onClick={onToggleViewMode}
         >
           <FeroHaIcon name={viewMode === "preview" ? "Edit" : "Eye"} size={16} />

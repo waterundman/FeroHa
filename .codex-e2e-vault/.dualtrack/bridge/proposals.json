@@ -1,0 +1,395 @@
+[
+  {
+    "id": "bridge_6879da2f53da45b5b383fa2ccc2a5c90",
+    "intent": "打开 vault 后 Bridge 正常路径回归",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "research",
+    "sandbox_summary": "tools=[search,analyze,deep_research,vector_search,fulltext_search,web_search,arxiv_search,semantic_scholar_search,llm_complete]; reads=.; writes=read-only; network=Allowed; bridge=true",
+    "expected_output": "research brief with sources",
+    "risk_reason": "uses research tools and may use network sources",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_5ef1f6416c954552aa096756143a59eb"
+    },
+    "status": "rejected",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_5ef1f6416c954552aa096756143a59eb",
+        "excerpt": "打开 vault 后 Bridge 正常路径回归"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_5ef1f6416c954552aa096756143a59eb"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_5ef1f6416c954552aa096756143a59eb"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781340669790,
+    "updated_at": 1781340669812
+  },
+  {
+    "id": "bridge_664a9a001ade4c5dbfe4628b6248ea76",
+    "intent": "Codex 写作提案闭环：生成一条可审查的短建议",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "write_proposal",
+    "sandbox_summary": "tools=[llm_complete,ghost_write]; reads=.; writes=.dualtrack/ghosts; network=Disabled; bridge=true",
+    "expected_output": "ghost write proposal",
+    "risk_reason": "creates ghost write output requiring review",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_851e1f8da40341eb9fced3974f3f7546"
+    },
+    "status": "approved",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_851e1f8da40341eb9fced3974f3f7546",
+        "excerpt": "Codex 写作提案闭环：生成一条可审查的短建议"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_851e1f8da40341eb9fced3974f3f7546"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_851e1f8da40341eb9fced3974f3f7546"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781340969531,
+    "updated_at": 1781340969559
+  },
+  {
+    "id": "bridge_dde15747e13547409468b3c945ff84dd",
+    "intent": "审阅 1 个 Ghost 建议块",
+    "summary": "AI 为 `card-result.md` 创建了 1 个待审阅建议块。",
+    "source": "ghost",
+    "source_ref": {
+      "kind": "ghost",
+      "id": "ghost_37ac2c56dfc9463a88fa49506e314eda",
+      "path": "card-result.md"
+    },
+    "status": "pending",
+    "evidence": [
+      {
+        "label": "Ghost diff",
+        "kind": "diff",
+        "ref": "ghost_37ac2c56dfc9463a88fa49506e314eda"
+      }
+    ],
+    "impact": {
+      "notes": [
+        "card-result.md"
+      ],
+      "creates_files": false,
+      "modifies_notes": true,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "high",
+    "actions": [
+      {
+        "id": "open-diff",
+        "label": "打开 Diff",
+        "kind": "open_diff",
+        "payload": {
+          "ghost_id": "ghost_37ac2c56dfc9463a88fa49506e314eda"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "ghost_id": "ghost_37ac2c56dfc9463a88fa49506e314eda"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781340970818,
+    "updated_at": 1781340970818
+  },
+  {
+    "id": "bridge_d3477d251e4f45dea93bb475c9020203",
+    "intent": "Codex Diff accept 修复后闭环",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "write_proposal",
+    "sandbox_summary": "tools=[llm_complete,ghost_write]; reads=.; writes=.dualtrack/ghosts; network=Disabled; bridge=true",
+    "expected_output": "ghost write proposal",
+    "risk_reason": "creates ghost write output requiring review",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_4cf2f21c0bee4099b69089b115ba8039"
+    },
+    "status": "approved",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_4cf2f21c0bee4099b69089b115ba8039",
+        "excerpt": "Codex Diff accept 修复后闭环"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_4cf2f21c0bee4099b69089b115ba8039"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_4cf2f21c0bee4099b69089b115ba8039"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781341342539,
+    "updated_at": 1781341342562
+  },
+  {
+    "id": "bridge_cbad17d320bf4b1fa6ae718495425cea",
+    "intent": "审阅 1 个 Ghost 建议块",
+    "summary": "AI 为 `card-result.md` 创建了 1 个待审阅建议块。",
+    "source": "ghost",
+    "source_ref": {
+      "kind": "ghost",
+      "id": "ghost_8560a8e37b674cf59151da90933ca1ac",
+      "path": "card-result.md"
+    },
+    "status": "pending",
+    "evidence": [
+      {
+        "label": "Ghost diff",
+        "kind": "diff",
+        "ref": "ghost_8560a8e37b674cf59151da90933ca1ac"
+      }
+    ],
+    "impact": {
+      "notes": [
+        "card-result.md"
+      ],
+      "creates_files": false,
+      "modifies_notes": true,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "high",
+    "actions": [
+      {
+        "id": "open-diff",
+        "label": "打开 Diff",
+        "kind": "open_diff",
+        "payload": {
+          "ghost_id": "ghost_8560a8e37b674cf59151da90933ca1ac"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "ghost_id": "ghost_8560a8e37b674cf59151da90933ca1ac"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781341344918,
+    "updated_at": 1781341344918
+  },
+  {
+    "id": "bridge_207434e7d1194be0896b712cfde3fc5b",
+    "intent": "Codex Bridge applied 状态回归",
+    "summary": "AI 准备执行一个需要人类确认的任务。",
+    "task_type": "write_proposal",
+    "sandbox_summary": "tools=[llm_complete,ghost_write]; reads=.; writes=.dualtrack/ghosts; network=Disabled; bridge=true",
+    "expected_output": "ghost write proposal",
+    "risk_reason": "creates ghost write output requiring review",
+    "source": "tool",
+    "source_ref": {
+      "kind": "task",
+      "id": "task_30916464715b4a9d8ed3b436a530220c"
+    },
+    "status": "approved",
+    "evidence": [
+      {
+        "label": "Agent task",
+        "kind": "trace",
+        "ref": "task_30916464715b4a9d8ed3b436a530220c",
+        "excerpt": "Codex Bridge applied 状态回归"
+      }
+    ],
+    "impact": {
+      "notes": [],
+      "creates_files": false,
+      "modifies_notes": false,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "medium",
+    "actions": [
+      {
+        "id": "approve",
+        "label": "批准",
+        "kind": "approve_task",
+        "payload": {
+          "task_id": "task_30916464715b4a9d8ed3b436a530220c"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "task_id": "task_30916464715b4a9d8ed3b436a530220c"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781342266685,
+    "updated_at": 1781342266711
+  },
+  {
+    "id": "bridge_b9a0aa6fbad34560bfe1bf49e710784f",
+    "intent": "审阅 1 个 Ghost 建议块",
+    "summary": "AI 为 `card-result.md` 创建了 1 个待审阅建议块。",
+    "source": "ghost",
+    "source_ref": {
+      "kind": "ghost",
+      "id": "ghost_c37b5651ae1b463bad5c859fe5d2ef0f",
+      "path": "card-result.md"
+    },
+    "status": "applied",
+    "evidence": [
+      {
+        "label": "Ghost diff",
+        "kind": "diff",
+        "ref": "ghost_c37b5651ae1b463bad5c859fe5d2ef0f"
+      }
+    ],
+    "impact": {
+      "notes": [
+        "card-result.md"
+      ],
+      "creates_files": false,
+      "modifies_notes": true,
+      "exports_data": false,
+      "external_side_effect": false
+    },
+    "risk": "high",
+    "actions": [
+      {
+        "id": "open-diff",
+        "label": "打开 Diff",
+        "kind": "open_diff",
+        "payload": {
+          "ghost_id": "ghost_c37b5651ae1b463bad5c859fe5d2ef0f"
+        }
+      },
+      {
+        "id": "reject",
+        "label": "拒绝",
+        "kind": "reject",
+        "payload": {
+          "ghost_id": "ghost_c37b5651ae1b463bad5c859fe5d2ef0f"
+        }
+      }
+    ],
+    "trust_snapshot": {
+      "score": 0.5,
+      "acceptance_rate": 0.0,
+      "total_interactions": 0,
+      "recommended_mode": "semiauto"
+    },
+    "created_at": 1781342269025,
+    "updated_at": 1781342302941
+  }
+]

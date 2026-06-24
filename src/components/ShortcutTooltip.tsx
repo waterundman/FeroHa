@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import FeroHaIcon from "./FeroHaIcon";
+import { useAppStore } from "../hooks/useAppStore";
 
 interface ShortcutTooltipProps {
   shortcut: string;
@@ -94,13 +95,14 @@ export function ShortcutHelpModal({
   isOpen: boolean;
   onClose: () => void;
 }) {
+  const mode = useAppStore((s) => s.mode);
   const shortcuts = [
     { key: "Ctrl+N", description: "新建笔记" },
     { key: "Ctrl+P", description: "快速搜索" },
-    { key: "Ctrl+B", description: "切换侧边栏" },
-    { key: "Ctrl+1", description: "Editor面板" },
-    { key: "Ctrl+2", description: "Graph面板" },
-    { key: "Ctrl+3", description: "Diff面板" },
+    { key: "Ctrl+B", description: "切换侧栏" },
+    { key: "Ctrl+1", description: "编辑器面板" },
+    { key: "Ctrl+2", description: mode === "ai" ? "知识图谱" : "灵感画布" },
+    { key: "Ctrl+3", description: mode === "ai" ? "Agent 任务" : "差异审查" },
     { key: "Ctrl+/", description: "快捷键帮助" },
     { key: "Ctrl+S", description: "保存笔记" },
   ];
@@ -111,7 +113,7 @@ export function ShortcutHelpModal({
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHeader}>
-          <h3 style={styles.modalTitle}>快捷键列表</h3>
+          <h3 style={styles.modalTitle}>快捷键</h3>
           <button style={styles.closeBtn} onClick={onClose}>
             <FeroHaIcon name="X" size={14} />
           </button>

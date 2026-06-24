@@ -106,13 +106,13 @@ export default function TagsPanel({ isTauri }: TagsPanelProps) {
   return (
     <div style={S.container}>
       <div style={S.header}>
-        Tags
+        标签
         <span style={S.badge}>{allTags.length}</span>
       </div>
       <div style={S.list}>
         {sorted.length === 0 && (
           <div style={S.empty}>
-            No tags yet. Add tags in frontmatter or use #tag in notes.
+            暂无标签。可在 frontmatter 中添加标签，或在笔记里使用 #标签。
           </div>
         )}
         {sorted.map((tag) => {

@@ -64,20 +64,21 @@ test.describe("Debug - DOM & Console Inspection", () => {
     await page.waitForLoadState("networkidle");
 
     // Switch to Graph
-    await page.locator('button[title="Graph"]').click();
+    await page.locator('button[aria-controls="panel-graph"]').click();
     await page.waitForTimeout(500);
 
-    const graphCanvas = page.locator("canvas");
-    const canvasVisible = await graphCanvas.isVisible();
+    const graphPanel = page.locator("#panel-graph");
+    const canvasVisible = await graphPanel.isVisible();
     console.log("\n=== GRAPH VIEW ===");
-    console.log("Canvas visible:", canvasVisible);
+    console.log("Graph panel visible:", canvasVisible);
     if (canvasVisible) {
-      const box = await graphCanvas.boundingBox();
-      console.log("Canvas size:", box);
+      const box = await graphPanel.boundingBox();
+      console.log("Graph panel size:", box);
     }
 
-    // Switch to Diff
-    await page.locator('button[title="Diff"]').click();
+    // Switch to Diff on the human face.
+    await page.locator('button[aria-label="切换到人类面"]').click();
+    await page.locator('button[aria-controls="panel-diff"]').click();
     await page.waitForTimeout(500);
 
     const diffContent = await page.locator("main").textContent();

@@ -1,0 +1,29 @@
+{
+  "id": "ghost_c37b5651ae1b463bad5c859fe5d2ef0f",
+  "task_id": "task_30916464715b4a9d8ed3b436a530220c",
+  "source_note": "card-result.md",
+  "task_description": "Card execution: codex-live-bridge-applied-smoke-v2",
+  "suggested_blocks": [
+    {
+      "block_id": "ghost-block-0",
+      "content": "证据越强，后验越明显偏离先验。",
+      "operation": "suggestion",
+      "after_block_id": null,
+      "heading_context": "codex-live-bridge-applied-smoke-v2",
+      "context": [],
+      "verified": null,
+      "verification_result": null
+    }
+  ],
+  "created_at": 1781342269023,
+  "status": "accepted",
+  "priority": 50,
+  "expires_at": null,
+  "related_ghosts": [],
+  "confidence": 1.0,
+  "feedback_history": [],
+  "accepted_blocks": [
+    "ghost-block-0"
+  ],
+  "rejected_blocks": []
+}

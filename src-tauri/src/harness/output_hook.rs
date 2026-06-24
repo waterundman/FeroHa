@@ -69,6 +69,7 @@ pub struct OutputClaim {
     pub source_note: String,
 }
 
+#[derive(Clone)]
 pub struct OutputManager {
     hooks: Vec<OutputHook>,
 }
@@ -184,10 +185,24 @@ impl OutputManager {
             .collect();
 
         let suggested_actions = if let Some(ref v) = result.verification {
-            v.violations
-                .iter()
-                .map(|v| format!("Investigate: {:?}", v))
-                .collect()
+            if v.diagnostics.is_empty() {
+                v.violations
+                    .iter()
+                    .map(|violation| format!("Investigate proposition consistency: {}", violation))
+                    .collect()
+            } else {
+                v.diagnostics
+                    .iter()
+                    .map(|diagnostic| {
+                        diagnostic.repair_hint.clone().unwrap_or_else(|| {
+                            format!(
+                                "Investigate proposition consistency: {}",
+                                diagnostic.message
+                            )
+                        })
+                    })
+                    .collect()
+            }
         } else {
             vec![]
         };

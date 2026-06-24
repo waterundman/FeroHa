@@ -1,0 +1,29 @@
+{
+  "id": "ghost_37ac2c56dfc9463a88fa49506e314eda",
+  "task_id": "task_851e1f8da40341eb9fced3974f3f7546",
+  "source_note": "card-result.md",
+  "task_description": "Card execution: codex-live-diff-smoke",
+  "suggested_blocks": [
+    {
+      "block_id": "ghost-block-0",
+      "content": "在贝叶斯笔记中补充先验与似然的关系。",
+      "operation": "suggestion",
+      "after_block_id": null,
+      "heading_context": "codex-live-diff-smoke",
+      "context": [],
+      "verified": null,
+      "verification_result": null
+    }
+  ],
+  "created_at": 1781340970815,
+  "status": "accepted",
+  "priority": 50,
+  "expires_at": null,
+  "related_ghosts": [],
+  "confidence": 1.0,
+  "feedback_history": [],
+  "accepted_blocks": [
+    "ghost-block-0"
+  ],
+  "rejected_blocks": []
+}

@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginLoadError {
@@ -74,6 +74,70 @@ fn default_memory_pages() -> u32 {
     256
 }
 
+fn validate_plugin_name(name: &str) -> Result<(), PluginLoadError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(PluginLoadError::InvalidManifest(
+            "Plugin name must be 1-64 characters".to_string(),
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(PluginLoadError::InvalidManifest(format!(
+            "Invalid plugin name: {}",
+            name
+        )));
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+    {
+        return Err(PluginLoadError::InvalidManifest(format!(
+            "Invalid plugin name: {}",
+            name
+        )));
+    }
+    Ok(())
+}
+
+fn safe_relative_path(path: &str, label: &str) -> Result<PathBuf, PluginLoadError> {
+    if path.trim().is_empty() {
+        return Err(PluginLoadError::InvalidManifest(format!(
+            "{} must be a relative path",
+            label
+        )));
+    }
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Err(PluginLoadError::InvalidManifest(format!(
+            "{} must be a relative path",
+            label
+        )));
+    }
+
+    let mut safe_path = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => safe_path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(PluginLoadError::InvalidManifest(format!(
+                    "Unsafe {}: {}",
+                    label,
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    if safe_path.as_os_str().is_empty() {
+        return Err(PluginLoadError::InvalidManifest(format!(
+            "{} must be a relative path",
+            label
+        )));
+    }
+
+    Ok(safe_path)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginInfo {
     pub id: String,
@@ -139,18 +203,30 @@ impl PluginLoader {
         let manifest: PluginManifest = toml::from_str(&content)
             .map_err(|e| PluginLoadError::InvalidManifest(format!("TOML parse error: {}", e)))?;
 
-        self.validate(&manifest)?;
+        let plugin_dir = manifest_path.parent().ok_or_else(|| {
+            PluginLoadError::InvalidManifest(format!(
+                "Manifest has no parent directory: {}",
+                manifest_path.display()
+            ))
+        })?;
+        self.validate_at_dir(&manifest, plugin_dir)?;
         Ok(manifest)
     }
 
     /// Validate a plugin manifest
     pub fn validate(&self, manifest: &PluginManifest) -> Result<(), PluginLoadError> {
+        validate_plugin_name(&manifest.name)?;
+        let plugin_dir = self.plugins_dir.join(&manifest.name);
+        self.validate_at_dir(manifest, &plugin_dir)
+    }
+
+    fn validate_at_dir(
+        &self,
+        manifest: &PluginManifest,
+        plugin_dir: &Path,
+    ) -> Result<(), PluginLoadError> {
         // Check name
-        if manifest.name.is_empty() || manifest.name.len() > 64 {
-            return Err(PluginLoadError::InvalidManifest(
-                "Plugin name must be 1-64 characters".to_string(),
-            ));
-        }
+        validate_plugin_name(&manifest.name)?;
 
         // Check version format (semver)
         if !manifest
@@ -174,8 +250,8 @@ impl PluginLoader {
         }
 
         // Validate WASM entry
-        let plugin_dir = self.plugins_dir.join(&manifest.name);
-        let wasm_path = plugin_dir.join(&manifest.wasm.entry);
+        let wasm_entry = safe_relative_path(&manifest.wasm.entry, "WASM entry")?;
+        let wasm_path = plugin_dir.join(wasm_entry);
         if !wasm_path.exists() {
             return Err(PluginLoadError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -218,8 +294,10 @@ impl PluginLoader {
     /// In production, this uses wasmtime::Module::from_file().
     /// During development (Stage 6), returns a validated handle.
     pub fn load_wasm(&self, manifest: &PluginManifest) -> Result<WasmHandle, PluginLoadError> {
+        validate_plugin_name(&manifest.name)?;
+        let wasm_entry = safe_relative_path(&manifest.wasm.entry, "WASM entry")?;
         let plugin_dir = self.plugins_dir.join(&manifest.name);
-        let wasm_path = plugin_dir.join(&manifest.wasm.entry);
+        let wasm_path = plugin_dir.join(wasm_entry);
 
         let wasm_bytes = fs::read(&wasm_path)?;
 
@@ -433,5 +511,85 @@ memory_pages = 128
         let loader = PluginLoader::new(dir.path().to_str().unwrap(), HOST_VERSION);
         let result = loader.discover().unwrap();
         assert!(result.is_empty()); // No manifest, silently skipped
+    }
+
+    fn write_test_archive(path: &Path, manifest: &str) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let wasm_bytes: Vec<u8> = vec![
+            0x00, 0x61, 0x73, 0x6d, // magic \0asm
+            0x01, 0x00, 0x00, 0x00, // version 1
+        ];
+
+        let mut manifest_header = tar::Header::new_gnu();
+        manifest_header.set_size(manifest.as_bytes().len() as u64);
+        manifest_header.set_mode(0o644);
+        manifest_header.set_cksum();
+        archive
+            .append_data(&mut manifest_header, "plugin.toml", manifest.as_bytes())
+            .unwrap();
+
+        let mut wasm_header = tar::Header::new_gnu();
+        wasm_header.set_size(wasm_bytes.len() as u64);
+        wasm_header.set_mode(0o644);
+        wasm_header.set_cksum();
+        archive
+            .append_data(&mut wasm_header, "plugin.wasm", wasm_bytes.as_slice())
+            .unwrap();
+
+        archive.finish().unwrap();
+    }
+
+    #[test]
+    fn test_install_from_archive_validates_temp_manifest_before_copy() {
+        let plugins_dir = TempDir::new().unwrap();
+        let archive_dir = TempDir::new().unwrap();
+        let archive_path = archive_dir.path().join("test-plugin.tar.gz");
+        write_test_archive(&archive_path, TEST_MANIFEST);
+
+        let loader = PluginLoader::new(plugins_dir.path().to_str().unwrap(), HOST_VERSION);
+        let manifest = loader.install_from_archive(&archive_path).unwrap();
+
+        assert_eq!(manifest.name, "test-plugin");
+        assert!(plugins_dir
+            .path()
+            .join("test-plugin")
+            .join("plugin.toml")
+            .exists());
+        assert!(plugins_dir
+            .path()
+            .join("test-plugin")
+            .join("plugin.wasm")
+            .exists());
+    }
+
+    #[test]
+    fn test_reject_plugin_name_path_escape() {
+        let dir = TempDir::new().unwrap();
+        let loader = PluginLoader::new(dir.path().to_str().unwrap(), HOST_VERSION);
+        let mut manifest = toml::from_str::<PluginManifest>(TEST_MANIFEST).unwrap();
+        manifest.name = "../outside".to_string();
+
+        let result = loader.validate(&manifest);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reject_wasm_entry_path_escape() {
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("test-plugin");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("plugin.toml"), TEST_MANIFEST).unwrap();
+        fs::write(plugin_dir.join("plugin.wasm"), b"\0asm\x01\0\0\0").unwrap();
+
+        let loader = PluginLoader::new(dir.path().to_str().unwrap(), HOST_VERSION);
+        let mut manifest = toml::from_str::<PluginManifest>(TEST_MANIFEST).unwrap();
+        manifest.wasm.entry = "../outside.wasm".to_string();
+
+        let result = loader.validate(&manifest);
+
+        assert!(result.is_err());
     }
 }

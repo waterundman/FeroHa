@@ -57,7 +57,21 @@ impl SandboxPolicy {
         Self {
             tool_allowlist: strings(&["mdt_validate", "mdt_index"]),
             read_roots: vec![PathBuf::from(".")],
-            write_roots: vec![PathBuf::from(".dualtrack/mdt")],
+            write_roots: vec![
+                PathBuf::from(".dualtrack/mdt"),
+                PathBuf::from(".dualtrack/jsonld"),
+            ],
+            network_policy: NetworkPolicy::Disabled,
+            max_runtime_secs: 300,
+            requires_bridge: true,
+        }
+    }
+
+    pub fn jsonld_index() -> Self {
+        Self {
+            tool_allowlist: strings(&["jsonld_validate", "jsonld_index", "jsonld_migrate"]),
+            read_roots: vec![PathBuf::from(".")],
+            write_roots: vec![PathBuf::from(".dualtrack/jsonld")],
             network_policy: NetworkPolicy::Disabled,
             max_runtime_secs: 300,
             requires_bridge: true,
@@ -90,12 +104,27 @@ impl SandboxPolicy {
         self.tool_allowlist.iter().any(|tool| tool == tool_name)
     }
 
+    pub fn allows_read(&self, path: &Path) -> bool {
+        if self.read_roots.is_empty() {
+            return false;
+        }
+        let Some(candidate) = normalize_logical_path(path) else {
+            return false;
+        };
+        self.read_roots
+            .iter()
+            .filter_map(|root| normalize_logical_path(root))
+            .any(|root| root.as_os_str().is_empty() || candidate.starts_with(root))
+    }
+
     pub fn allows_write(&self, path: &Path) -> bool {
-        let candidate = normalize_logical_path(path);
+        let Some(candidate) = normalize_logical_path(path) else {
+            return false;
+        };
         self.write_roots
             .iter()
-            .map(|root| normalize_logical_path(root))
-            .any(|root| candidate.starts_with(root))
+            .filter_map(|root| normalize_logical_path(root))
+            .any(|root| root.as_os_str().is_empty() || candidate.starts_with(root))
     }
 
     pub fn summary(&self) -> String {
@@ -113,9 +142,18 @@ impl SandboxPolicy {
                 .collect::<Vec<_>>()
                 .join(",")
         };
+        let reads = if self.read_roots.is_empty() {
+            "none".to_string()
+        } else {
+            self.read_roots
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         format!(
-            "tools=[{}]; writes={}; network={:?}; bridge={}",
-            tools, writes, self.network_policy, self.requires_bridge
+            "tools=[{}]; reads={}; writes={}; network={:?}; bridge={}",
+            tools, reads, writes, self.network_policy, self.requires_bridge
         )
     }
 }
@@ -124,21 +162,21 @@ fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
 
-fn normalize_logical_path(path: &Path) -> PathBuf {
+fn normalize_logical_path(path: &Path) -> Option<PathBuf> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
                 if !normalized.pop() {
-                    normalized.push("..");
+                    return None;
                 }
             }
             Component::Normal(part) => normalized.push(part),
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+            Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    normalized
+    Some(normalized)
 }
 
 #[cfg(test)]
@@ -167,5 +205,26 @@ mod tests {
         let policy =
             SandboxPolicy::with_write_roots(vec![PathBuf::from("vault/.dualtrack/ghosts")]);
         assert!(!policy.allows_write(Path::new("vault/.dualtrack/ghosts/../outside.md")));
+    }
+
+    #[test]
+    fn test_sandbox_blocks_read_outside_root() {
+        let policy = SandboxPolicy {
+            read_roots: vec![PathBuf::from("vault/notes")],
+            ..SandboxPolicy::read_only(&["mdt_read"])
+        };
+
+        assert!(policy.allows_read(Path::new("vault/notes/source.md")));
+        assert!(!policy.allows_read(Path::new("vault/notes/../../secret.md")));
+        assert!(!policy.allows_read(Path::new("vault/private.md")));
+    }
+
+    #[test]
+    fn test_sandbox_dot_root_blocks_path_escape() {
+        let policy = SandboxPolicy::read_only(&["search"]);
+
+        assert!(policy.allows_read(Path::new("notes/source.md")));
+        assert!(!policy.allows_read(Path::new("../secret.md")));
+        assert!(!policy.allows_read(Path::new("/tmp/secret.md")));
     }
 }
